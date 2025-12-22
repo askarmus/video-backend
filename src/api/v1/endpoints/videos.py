@@ -30,39 +30,41 @@ def create_video_use_case():
     repo = SupabaseVideoRepository()
     return CreateVideoUseCase(repo)
 
-def run_pipeline_background(video_id: str, video_uri: str):
+def run_pipeline_background(video_id: str, video_uri: str, user_id: str, title: str, user_ip: str = "0.0.0.0", user_country: str = "unknown"):
     """
     Background task to execute the video processing pipeline.
     """
     try:
+        # Set environment variables for the pipeline to consume
+        os.environ["VIDEO_URI"] = video_uri
+        os.environ["USER_IP"] = user_ip
+        os.environ["USER_COUNTRY"] = user_country
         repo = SupabaseVideoRepository()
+        use_case = CreateVideoUseCase(repo)
         pipeline = NarrationPipeline(gemini_client=client, tts_creds=creds, base_dir=PROJECT_ROOT)
+
 
         # 1. Preparation (Download)
         os.environ["VIDEO_URI"] = video_uri
         local_raw = pipeline.download_video(video_uri)
 
-        # 2. Core Pipeline
-        results = pipeline.run(local_raw, gcs_video_uri=video_uri)
+        # 2. Core Pipeline - Now handles DB updates internally
+        results = pipeline.run(
+            local_raw_path=local_raw, 
+            gcs_video_uri=video_uri,
+            video_id=video_id,
+            user_id=user_id,
+            title=title,
+            video_uri=video_uri,
+            use_case=use_case
+        )
 
         if not results:
              print(f"Pipeline processing failed for video {video_id}")
              repo.update(video_id, status="failed")
              return
 
-        # 3. Assets
-        # The pipeline now handles uploads and returns GS URIs
-        final_video_url = results.get("gcs_video_uri") or results["video_path"]
-
-        # 4. Update Database
-        video_data = {
-            "processed_video_url": final_video_url,
-            "script": results["script"],
-            "project_id": results.get("project_id")
-        }
-
-        repo.update(video_id, status="completed", video_data=video_data)
-        print(f"Background processing complete for video {video_id} (Project: {results.get('project_id')})")
+        print(f"Background processing complete for video {video_id}")
 
 
     except Exception as e:
@@ -127,7 +129,15 @@ async def upload_complete(
         )
 
         # Trigger heavy processing in the background
-        background_tasks.add_task(run_pipeline_background, request.video_id, request.video_uri)
+        background_tasks.add_task(
+            run_pipeline_background, 
+            request.video_id, 
+            request.video_uri, 
+            user.id, 
+            request.title,
+            request.user_ip,
+            request.user_country
+        )
 
         return {
             "status": "processing",

@@ -24,10 +24,16 @@ def generate_voiceover(script_data, credentials, output_dir="voiceovers"):
         pitch=2.0
     )
     
+    import uuid
+
     audio_files = []
     
     for i, entry in enumerate(script_data):
-        print(f"🎤 Generating voiceover {i+1}/{len(script_data)}...")
+        # Generate unique ID for this segment if not present
+        if 'id' not in entry:
+            entry['id'] = uuid.uuid4().hex[:8]
+            
+        print(f"🎤 Generating voiceover {i+1}/{len(script_data)} ({entry['id']})...")
         
         synthesis_input = texttospeech.SynthesisInput(text=entry['voiceover_text'])
         
@@ -44,11 +50,13 @@ def generate_voiceover(script_data, credentials, output_dir="voiceovers"):
             out.write(response.audio_content)
         
         audio_files.append({
+            "id": entry['id'],
             "filename": filename,
             "timestamp": entry['timestamp'],
             "duration": entry.get('pause_duration', 1.5),
             "text": entry['voiceover_text']
         })
+
         
     
     # Save metadata

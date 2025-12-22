@@ -22,7 +22,6 @@ class NarrationPipeline:
         self.video_service = VideoService()
         self.audio_service = AudioService()
 
-
     def _timestamp_to_seconds(self, ts):
         parts = ts.split(':')
         if len(parts) == 1:
@@ -84,7 +83,7 @@ class NarrationPipeline:
         bucket_name = os.getenv("VIDEO_URI").replace("gs://", "").split("/")[0]
         return upload_file(bucket_name, local_path, destination_blob)
 
-    def run(self, local_raw_path, gcs_video_uri):
+    def run(self, local_raw_path, gcs_video_uri, video_id=None, user_id=None, title=None, video_uri=None, use_case: CreateVideoUseCase = None):
         pipeline_start = time.time()
         timings = {}
 
@@ -101,7 +100,6 @@ class NarrationPipeline:
         bucket_name = os.getenv("VIDEO_URI").replace("gs://", "").split("/")[0] if os.getenv("VIDEO_URI") else None
         
         # Create project-specific local directory
-
         project_dir = os.path.join(self.output_dir, project_id)
         voiceovers_dir = os.path.join(project_dir, "voiceovers")
         os.makedirs(voiceovers_dir, exist_ok=True)
@@ -173,33 +171,67 @@ class NarrationPipeline:
         timings["Audio Concat"] = time.time() - audio_concat_start
 
         # 5. Cloud Upload (All assets in project folder)
+        gcs_video_url = f"gs://{bucket_name}/processed/{project_id}/{final_video_name}" if not use_local else None
+        gcs_audio_url = f"gs://{bucket_name}/processed/{project_id}/{final_audio_name}" if not use_local else None
+
         if not use_local:
             print(f"☁️  [5/5] Syncing all assets to Cloud Storage...")
             # Upload individual voiceovers
-            for audio in audio_files:
+            for i, audio in enumerate(audio_files):
                 audio_blob = f"processed/{project_id}/voiceovers/{os.path.basename(audio['filename'])}"
-                self.upload_asset(audio['filename'], audio_blob)
-            
-            # Upload final products
+                gcs_url = self.upload_asset(audio['filename'], audio_blob)
+                
+                # Update script segment with GCS URL
+                if i < len(script):
+                    script[i]["audio_url"] = gcs_url
+        else:
+            # Local mode: assign local paths to audio_url
+            for i, audio in enumerate(audio_files):
+                if i < len(script):
+                    script[i]["audio_url"] = audio["filename"]
+
+        # Save the updated script (with IDs and URLs) locally
+        save_script(script, script_file)
+        
+        # Upload final products
+        if not use_local:
             self.upload_asset(final_video_path, f"processed/{project_id}/{final_video_name}")
             self.upload_asset(final_audio_path, f"processed/{project_id}/{final_audio_name}")
             self.upload_asset(script_file, f"processed/{project_id}/ai_voiceover_script.json")
             print(f"  ✅ All assets uploaded to GCS folder: processed/{project_id}/")
 
 
-        metadata = {
-                    "file_type": request.file_type,
-                    "duration": request.duration,
-                    "user_ip": request.user_ip,
-                    "user_country": request.user_country,
-                    "processed_video_url": final_video_url,
-                    "script": results["script"],
-                    "project_id": results.get("project_id")
-                }
-        
-        use_case.execute(user_id=user.id, video_id=request.video_id,title=request.title,video_uri=request.video_uri, metadata=metadata)
+        # 6. Metadata and Database Update
+        if use_case and video_id:
+            print(f"💾 Updating database record for video {video_id}...")
+            
+            # Fetch final properties
+            processed_file_type = os.path.splitext(final_video_path)[1].replace('.', '')
+            processed_duration = self.video_service.get_duration(final_video_path)
+            
+            metadata = {
+                "file_type": processed_file_type,
+                "duration": processed_duration,
+                "user_ip": os.getenv("USER_IP", "0.0.0.0"),
+                "user_country": os.getenv("USER_COUNTRY", "unknown"),
+                "processed_video_url": gcs_video_url or final_video_path,
+                "processed_audio_url": gcs_audio_url or final_audio_path,
+                "script": script,
+                "project_id": project_id
+            }
+            
+            use_case.execute(
+                user_id=user_id or "unknown",
+                video_id=video_id,
+                title=title or "Untitled",
+                video_uri=video_uri or gcs_video_uri,
+                metadata=metadata,
+                status="completed"
+            )
+
 
         # Summary
+
         total_pipeline_time = time.time() - pipeline_start
         
         print(f"\n✨ PROCESSING COMPLETE")

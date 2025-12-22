@@ -1,6 +1,8 @@
 import os
+import uuid
 from src.infrastructure.google_client import client, creds
 from src.application.pipeline_service import NarrationPipeline
+
 
 # Setup configurations
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -11,6 +13,11 @@ if __name__ == "__main__":
     video_uri = os.getenv("VIDEO_URI")
     
     # 1. Initialize
+    from src.infrastructure.repositories.supabase_video_repository import SupabaseVideoRepository
+    from src.application.use_cases.create_video import CreateVideoUseCase
+    
+    repo = SupabaseVideoRepository()
+    use_case = CreateVideoUseCase(repo)
     pipeline = NarrationPipeline(gemini_client=client, tts_creds=creds, base_dir=BASE_DIR)
 
     print(f"\n🚀 STARTING NARRATION WORKFLOW [{env.upper()} MODE]")
@@ -22,7 +29,19 @@ if __name__ == "__main__":
 
     # 3. Core Pipeline
     # We pass the original video_uri for Gemini scripting context
-    results = pipeline.run(local_raw, gcs_video_uri=video_uri)
+    # Passing valid UUIDs to trigger the DB save logic in pipeline_service
+    test_video_id = str(uuid.uuid4())
+    test_user_id = "b438b72f-d935-4fba-b3e8-8b2a5ed941b3" # Valid dev user UUID
+    results = pipeline.run(
+
+        local_raw, 
+        gcs_video_uri=video_uri,
+        video_id=test_video_id,
+        user_id=test_user_id,
+        use_case=use_case
+    )
+
+
 
     if results:
         # 4. Success Reporting
