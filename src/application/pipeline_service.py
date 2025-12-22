@@ -7,6 +7,7 @@ from src.infrastructure.voice_service import generate_voiceover
 from src.infrastructure.storage_service import download_file, upload_file, parse_gcs_uri
 from src.application.video_service import VideoService
 from src.application.audio_service import AudioService
+from src.application.use_cases.create_video import CreateVideoUseCase
 
 class NarrationPipeline:
     def __init__(self, gemini_client, tts_creds, base_dir):
@@ -18,10 +19,9 @@ class NarrationPipeline:
         self.output_dir = os.path.join(base_dir, "output")
         os.makedirs(self.output_dir, exist_ok=True)
         
-        self.script_file = os.path.join(self.output_dir, "ai_voiceover_script.json")
-        self.voiceovers_dir = os.path.join(self.output_dir, "voiceovers")
         self.video_service = VideoService()
         self.audio_service = AudioService()
+
 
     def _timestamp_to_seconds(self, ts):
         parts = ts.split(':')
@@ -91,15 +91,27 @@ class NarrationPipeline:
         print(f"\n🚀 CORE NARRATION PIPELINE")
         print(f"-" * 40)
         
-        # Setup variables
-        timestamp = datetime.now().strftime("%H%M%S")
+        # Setup unique project identity
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_id = uuid.uuid4().hex[:4]
         base_name = os.path.splitext(os.path.basename(local_raw_path))[0].replace("raw_", "")
+        project_id = f"{base_name}_{timestamp}_{unique_id}"
+        
+        # Determine GCS bucket
+        bucket_name = os.getenv("VIDEO_URI").replace("gs://", "").split("/")[0] if os.getenv("VIDEO_URI") else None
+        
+        # Create project-specific local directory
+
+        project_dir = os.path.join(self.output_dir, project_id)
+        voiceovers_dir = os.path.join(project_dir, "voiceovers")
+        os.makedirs(voiceovers_dir, exist_ok=True)
+        
+        script_file = os.path.join(project_dir, "ai_voiceover_script.json")
         
         # 1. Trim
         trim_start = time.time()
-        unique_trimmed_name = f"trimmed_{base_name}_{timestamp}_{unique_id}.mp4"
-        local_trimmed = os.path.join(self.output_dir, unique_trimmed_name)
+        unique_trimmed_name = f"trimmed_{base_name}.mp4"
+        local_trimmed = os.path.join(project_dir, unique_trimmed_name)
         
         print(f"✂️ [1/5] Trimming Video...")
         self.video_service.fast_trim(local_raw_path, local_trimmed)
@@ -110,7 +122,7 @@ class NarrationPipeline:
         use_local = os.getenv("ENV", "local").lower() == "local"
         if not use_local:
             print(f"☁️  Uploading trimmed video for analysis...")
-            gcs_trimmed_uri = self.upload_asset(local_trimmed, f"processed/{unique_trimmed_name}")
+            gcs_trimmed_uri = self.upload_asset(local_trimmed, f"processed/{project_id}/{unique_trimmed_name}")
             timings["Video upload"] = time.time() - upload_start
         else:
             print(f"⏩ Skipping trimmed upload (Local Mode)")
@@ -120,12 +132,12 @@ class NarrationPipeline:
         step_start = time.time()
         print(f"📝 [2/5] Generating AI Script...")
         
-        script = load_script(self.script_file)
+        script = load_script(script_file)
         if not script:
             # Use the trimmed video URI for better script accuracy
             script = create_ai_voice_script(self.client, gcs_trimmed_uri)
             if script:
-                save_script(script, self.script_file)
+                save_script(script, script_file)
         
         if not script:
             print("❌ Error: Could not generate script.")
@@ -135,38 +147,59 @@ class NarrationPipeline:
         # 3. Voice Generation
         step_start = time.time()
         print(f"🎤 [3/5] Synthesizing Narrations ({len(script)} lines)...")
-        audio_files = generate_voiceover(script, self.creds, output_dir=self.voiceovers_dir)
+        # Ensure we pass the project-specific voiceovers directory
+        audio_files = generate_voiceover(script, self.creds, output_dir=voiceovers_dir)
         timings["Voice synthesis"] = time.time() - step_start
 
         # 4. Final Assembler
         print(f"🎬 [4/5] Assembling Final Video...")
         
-        # FIX: Resolve timeline overlaps before assembly
+        # Resolve timeline overlaps before assembly
         resolve_start = time.time()
         audio_files, script = self.resolve_timeline(audio_files, script)
         timings["Collision Fix"] = time.time() - resolve_start
         
         assemble_start = time.time()
-        final_video_name = f"final_{base_name}_{timestamp}_{unique_id}.mp4"
-        final_video_path = os.path.join(self.output_dir, final_video_name)
+        final_video_name = f"final_{base_name}.mp4"
+        final_video_path = os.path.join(project_dir, final_video_name)
         self.video_service.assemble_steps(raw_video=local_trimmed, script=script, audio_files=audio_files, output_path=final_video_path)
         timings["Video Assembly"] = time.time() - assemble_start
         
         # Create MP3
         audio_concat_start = time.time()
-        final_audio_name = f"narration_{base_name}_{timestamp}.mp3"
-        final_audio_path = os.path.join(self.output_dir, final_audio_name)
-        self.audio_service.concat_audio_files(audio_files, final_audio_path, self.output_dir)
+        final_audio_name = f"narration_{base_name}.mp3"
+        final_audio_path = os.path.join(project_dir, final_audio_name)
+        self.audio_service.concat_audio_files(audio_files, final_audio_path, project_dir)
         timings["Audio Concat"] = time.time() - audio_concat_start
 
-        # 5. Branding (Optional Background)
-        step_start = time.time()
-        bg_path = os.path.join(self.base_dir, "src", "assets", "f15fdd2d-4c99-4591-82b0-0778f7c982d2.png")
-        
-        branded_video_name = f"bg_{final_video_name}"
-        branded_video_path = os.path.join(self.output_dir, branded_video_name)
+        # 5. Cloud Upload (All assets in project folder)
+        if not use_local:
+            print(f"☁️  [5/5] Syncing all assets to Cloud Storage...")
+            # Upload individual voiceovers
+            for audio in audio_files:
+                audio_blob = f"processed/{project_id}/voiceovers/{os.path.basename(audio['filename'])}"
+                self.upload_asset(audio['filename'], audio_blob)
+            
+            # Upload final products
+            self.upload_asset(final_video_path, f"processed/{project_id}/{final_video_name}")
+            self.upload_asset(final_audio_path, f"processed/{project_id}/{final_audio_name}")
+            self.upload_asset(script_file, f"processed/{project_id}/ai_voiceover_script.json")
+            print(f"  ✅ All assets uploaded to GCS folder: processed/{project_id}/")
 
-       # Summary
+
+        metadata = {
+                    "file_type": request.file_type,
+                    "duration": request.duration,
+                    "user_ip": request.user_ip,
+                    "user_country": request.user_country,
+                    "processed_video_url": final_video_url,
+                    "script": results["script"],
+                    "project_id": results.get("project_id")
+                }
+        
+        use_case.execute(user_id=user.id, video_id=request.video_id,title=request.title,video_uri=request.video_uri, metadata=metadata)
+
+        # Summary
         total_pipeline_time = time.time() - pipeline_start
         
         print(f"\n✨ PROCESSING COMPLETE")
@@ -179,6 +212,8 @@ class NarrationPipeline:
         print(f"-" * 40)
         
         return {
+            "project_id": project_id,
+            "project_dir": project_dir,
             "video_path": final_video_path,
             "audio_path": final_audio_path,
             "video_name": final_video_name,
@@ -186,5 +221,9 @@ class NarrationPipeline:
             "trimmed_path": local_trimmed,
             "trimmed_name": unique_trimmed_name,
             "script": script,
-            "bg_path": bg_path if os.path.exists(bg_path) else None
+            "audio_files": audio_files,
+            "gcs_video_uri": f"gs://{bucket_name}/processed/{project_id}/{final_video_name}" if not use_local else None,
+            "gcs_audio_uri": f"gs://{bucket_name}/processed/{project_id}/{final_audio_name}" if not use_local else None
         }
+
+

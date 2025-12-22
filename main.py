@@ -25,17 +25,21 @@ if __name__ == "__main__":
     results = pipeline.run(local_raw, gcs_video_uri=video_uri)
 
     if results:
-        # 4. Cloud Sync (Optional)
+        # 4. Success Reporting
+        project_id = results.get("project_id", "default")
+        
         if env == "prod":
-            print(f"☁️  Uploading results to cloud...")
-            final_video_url = pipeline.upload_asset(results["video_path"], f"processed/{results['video_name']}")
-            final_audio_url = pipeline.upload_asset(results["audio_path"], f"processed/{results['audio_name']}")
+            # In prod mode, the pipeline already uploaded everything to the project folder
+            bucket_name = os.getenv("VIDEO_URI").replace("gs://", "").split("/")[0]
+            final_video_url = f"gs://{bucket_name}/processed/{project_id}/{results['video_name']}"
+            final_audio_url = f"gs://{bucket_name}/processed/{project_id}/{results['audio_name']}"
         else:
-            print(f"⏩ Skipping upload (Local Mode)")
+            print(f"⏩ Local assets preserved in: {results['project_dir']}")
             final_video_url = results["video_path"]
             final_audio_url = results["audio_path"]
 
-        print(f"\n✨ FINAL OUTPUTS:")
+        print(f"\n✨ FINAL OUTPUTS (Project: {project_id})")
         print(f"🎬 Video: {final_video_url}")
         print(f"🎵 Audio: {final_audio_url}")
         print(f"-" * 45 + "\n")
+

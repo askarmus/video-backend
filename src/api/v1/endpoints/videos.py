@@ -7,6 +7,7 @@ import traceback
 from src.api.auth import get_current_user
 from src.application.use_cases.get_video import GetVideoByIdUseCase
 from src.application.use_cases.list_videos import ListVideosUseCase
+from src.application.use_cases.create_video import CreateVideoUseCase
 from src.infrastructure.repositories.supabase_video_repository import SupabaseVideoRepository
 from src.application.pipeline_service import NarrationPipeline
 from src.infrastructure.google_client import client, creds
@@ -24,6 +25,10 @@ def get_video_use_case():
 def list_videos_use_case():
     repo = SupabaseVideoRepository()
     return ListVideosUseCase(repo)
+
+def create_video_use_case():
+    repo = SupabaseVideoRepository()
+    return CreateVideoUseCase(repo)
 
 def run_pipeline_background(video_id: str, video_uri: str):
     """
@@ -45,17 +50,20 @@ def run_pipeline_background(video_id: str, video_uri: str):
              repo.update(video_id, status="failed")
              return
 
-        # 3. Upload Assets
-        final_video_url = pipeline.upload_asset(results["video_path"], f"processed/{results['video_name']}")
+        # 3. Assets
+        # The pipeline now handles uploads and returns GS URIs
+        final_video_url = results.get("gcs_video_uri") or results["video_path"]
 
         # 4. Update Database
         video_data = {
             "processed_video_url": final_video_url,
             "script": results["script"],
+            "project_id": results.get("project_id")
         }
 
         repo.update(video_id, status="completed", video_data=video_data)
-        print(f"Background processing complete for video {video_id}")
+        print(f"Background processing complete for video {video_id} (Project: {results.get('project_id')})")
+
 
     except Exception as e:
         print(f"Background Processing Error for {video_id}: {e}")
@@ -98,35 +106,25 @@ async def get_video(
 async def upload_complete(
     request: UploadCompleteRequest, 
     background_tasks: BackgroundTasks,
-    user=Depends(get_current_user)
+    user=Depends(get_current_user),
+    use_case: CreateVideoUseCase = Depends(create_video_use_case)
 ):
     try:
-        repo = SupabaseVideoRepository()
-        
-        video_data = {
-            "source_video_url": request.video_uri,
-            "metadata": {
-                "file_type": request.file_type,
-                "duration": request.duration,
-                "user_ip": request.user_ip,
-                "user_country": request.user_country,
-                "has_intro": False,
-                "has_outro": False,
-                "is_edited": False,
-                "bg_name":"" 
-            }
+        # Use common Use Case to initialize video record
+        metadata = {
+            "file_type": request.file_type,
+            "duration": request.duration,
+            "user_ip": request.user_ip,
+            "user_country": request.user_country
         }
         
-        video = Video(
-            id=request.video_id,
-            created_by=user.id,
+        use_case.execute(
+            user_id=user.id,
+            video_id=request.video_id,
             title=request.title,
-            status="processing",
-            video_data=video_data,
-            updated_at=datetime.now()
+            video_uri=request.video_uri,
+            metadata=metadata
         )
-        
-        repo.save(video)
 
         # Trigger heavy processing in the background
         background_tasks.add_task(run_pipeline_background, request.video_id, request.video_uri)
