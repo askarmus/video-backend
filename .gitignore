@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venc/
+
+# Secrets (CRITICAL)
+.env
+key.json
+*.key.json
+*.credentials.json
+
+# Project Specific
+output/
+tts_out/
+final_demo_narrated.mp4
+final_demo_narratedTEMP_MPY_wvf_snd.mp4
+*.mp3
+ai_voiceover_script.json

@@ -1,0 +1,12 @@
+numpy
+moviepy
+opencv-python
+scenedetect
+edge-tts
+python-dotenv
+google-cloud-storage
+fastapi
+uvicorn
+supabase
+python-jose[cryptography]
+pyjwt
