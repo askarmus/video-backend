@@ -13,8 +13,9 @@ class CreateVideoUseCase:
         """
         video_data = {
             "source_video_url": video_uri,
-            "metadata": metadata
+            **(metadata or {})
         }
+
         
         video = Video(
             id=video_id,
