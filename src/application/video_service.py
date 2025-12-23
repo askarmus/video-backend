@@ -21,10 +21,18 @@ class VideoService:
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             raise RuntimeError("ffmpeg/ffprobe not found. Install FFmpeg and add it to PATH.")
 
+    def _timestamp_to_seconds(self, ts):
+        if not ts: return 0.0
+        parts = str(ts).split(':')
+        if len(parts) == 1:
+            return float(parts[0])
+        return int(parts[0]) * 60 + float(parts[1])
+
+
     def run_cmd(self, cmd):
         p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if p.returncode != 0:
-            raise RuntimeError(f"Command failed:\n{' '.join(cmd)}\n\nSTDERR:\n{p.stderr[:4000]}")
+            raise RuntimeError(f"Command failed:\n{' '.join(str(c) for c in cmd)}\n\nSTDERR:\n{p.stderr[:4000]}")
         return p.stdout, p.stderr
 
     def get_duration(self, path):
@@ -102,40 +110,7 @@ class VideoService:
             if pe - ps >= MIN_CUT_SEG:
                 padded.append((ps, pe))
         return self.merge_intervals(padded)
-
-    def fast_trim(self, input_path, output_path):
-        """
-        Trims silence and freezes from a video file.
-        """
-        dur = self.get_duration(input_path)
-
-        # 1) Detect freezes (visual dead)
-        _, err_freeze = self.run_cmd([
-            "ffmpeg", "-hide_banner", "-nostdin",
-            "-i", str(input_path),
-            "-vf", f"freezedetect=n={FREEZE_NOISE}:d={FREEZE_MIN_D}",
-            "-an", "-f", "null", "-"
-        ])
-        freezes = self.merge_intervals(self.parse_freezedetect(err_freeze))
-
-        # 2) Detect silences (audio dead)
-        _, err_sil = self.run_cmd([
-            "ffmpeg", "-hide_banner", "-nostdin",
-            "-i", str(input_path),
-            "-af", f"silencedetect=noise={SILENCE_DB}dB:d={SILENCE_MIN_D}",
-            "-vn", "-f", "null", "-"
-        ])
-        silences = self.merge_intervals(self.parse_silencedetect(err_sil))
-
-        # 3) Cut logic (here using silence as primary trigger, as in original script)
-        dead = self.apply_padding(silences, dur)
-        keep = self.invert_to_keep(dead, dur)
-
-        # 4) Export
-        self.export_segments(input_path, keep, output_path)
-        
-        return output_path
-
+ 
     def export_segments(self, input_path, keep, output_path):
         tmp = Path(tempfile.mkdtemp(prefix="trim_"))
         seg_files = []
@@ -245,42 +220,103 @@ class VideoService:
             str(output_path)
         ])
 
-    def assemble_steps(self, raw_video, script, audio_files, output_path):
+    def assemble_steps(self, raw_video, script, audio_files, output_path, cleanup_segments=None):
+        """
+        Assembles video by cutting segments for each script item, 
+        while specifically skipping 'cleanup_segments' (garbage parts).
+        """
         tmp = Path(tempfile.mkdtemp(prefix="steps_"))
         step_clips = []
         
         total_v_dur = self.get_duration(raw_video)
+        
+        # Convert cleanup segments to second-ranges
+        garbage_ranges = []
+        if cleanup_segments:
+            for seg in cleanup_segments:
+                s = self._timestamp_to_seconds(seg["start_time"])
+                e = self._timestamp_to_seconds(seg["end_time"])
+                garbage_ranges.append((s, e))
 
         try:
             for idx, step in enumerate(script):
-                audio_path = audio_files[idx]["filename"]
-                audio_dur = self.get_audio_duration(audio_path)
-
-                # Parse timestamp MM:SS
-                mm, ss = step["timestamp"].split(":")
-                start = int(mm) * 60 + float(ss)
+                # 1. Gather Audio Info
+                a = audio_files[idx]
+                audio_path = a["filename"]
+                a_dur = self.get_audio_duration(audio_path)
                 
-                # Safety: don't start after the video ends
-                # Leave at least 0.1s for a valid cut
-                if start >= total_v_dur:
-                    start = max(0.0, total_v_dur - 0.1)
+                # 2. Define Narration Window
+                start_time = self._timestamp_to_seconds(step["timestamp"])
+                
+                # Determine when the next segment starts to bound this one
+                if idx < len(script) - 1:
+                    end_window = self._timestamp_to_seconds(script[idx+1]["timestamp"])
+                else:
+                    end_window = total_v_dur
+                
+                # 3. Extract "Clean" Visuals
+                # We find ranges within [start_time, end_window] that are NOT garbage
+                valid_ranges = []
+                last_pos = start_time
+                
+                for g_start, g_end in sorted(garbage_ranges):
+                    if g_end <= start_time: continue # Past garbage
+                    if g_start >= end_window: break   # Future garbage
+                    
+                    # If there's a good part before this garbage starts
+                    if g_start > last_pos:
+                        valid_ranges.append((last_pos, g_start))
+                    
+                    last_pos = max(last_pos, g_end)
+                
+                # Add the remaining good part after the last garbage
+                if last_pos < end_window:
+                    valid_ranges.append((last_pos, end_window))
 
-                base_clip = tmp / f"v_{idx:03d}.mp4"
-                # If duration requested is longer than remaining video, ffmpeg handles it gracefully
-                self.cut_segment(raw_video, start, audio_dur, base_clip)
+                # 4. Cut and Stitch Good Sub-clips
+                sub_clips = []
+                current_v_dur = 0.0
+                
+                for i, (v_start, v_end) in enumerate(valid_ranges):
+                    # Stop if we already have enough video for the narration
+                    if current_v_dur >= a_dur: break
+                    
+                    # Calculate how much more we need
+                    needed = a_dur - current_v_dur
+                    actual_cut = min(v_end - v_start, needed)
+                    
+                    if actual_cut < 0.05: continue # Skip tiny fragments
+                    
+                    sub_clip_path = tmp / f"s_{idx:03d}_{i:03d}.mp4"
+                    self.cut_segment(raw_video, v_start, actual_cut, sub_clip_path)
+                    sub_clips.append(sub_clip_path)
+                    current_v_dur += actual_cut
 
+                # 5. Join Sub-clips or create fallback
+                if not sub_clips:
+                    # Fallback: just a tiny freeze frame if everything was garbage
+                    v_base = tmp / f"base_{idx:03d}.mp4"
+                    self.cut_segment(raw_video, start_time, 0.1, v_base)
+                elif len(sub_clips) == 1:
+                    v_base = sub_clips[0]
+                else:
+                    v_base = tmp / f"base_{idx:03d}.mp4"
+                    self.concat_clips(sub_clips, v_base)
+
+                # 6. Final Polish (Padding and Audio)
                 padded_clip = tmp / f"vpad_{idx:03d}.mp4"
-                self.freeze_to_duration(base_clip, audio_dur, padded_clip)
+                self.freeze_to_duration(v_base, a_dur, padded_clip)
 
                 final_clip = tmp / f"final_{idx:03d}.mp4"
                 self.attach_audio(padded_clip, audio_path, final_clip)
-
                 step_clips.append(final_clip)
 
+            # 7. Final Assembly
             self.concat_clips(step_clips, output_path)
+            
         finally:
-            # Cleanup temp working segments
             shutil.rmtree(tmp, ignore_errors=True)
+
 
     def get_video_size(self, path):
         out, _ = self.run_cmd([

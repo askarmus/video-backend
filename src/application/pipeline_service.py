@@ -111,37 +111,25 @@ class NarrationPipeline:
         
         script_file = os.path.join(project_dir, "ai_voiceover_script.json")
         
-        # 1. Trim
-        trim_start = time.time()
-        unique_trimmed_name = f"trimmed_{base_name}.mp4"
-        local_trimmed = os.path.join(project_dir, unique_trimmed_name)
-        
-        # print(f"✂️ [1/5] Trimming Video...")
-        # self.video_service.fast_trim(local_raw_path, local_trimmed)
-        # timings["Video Trim"] = time.time() - trim_start
-        
-        # Upload trimmed video to GCS so Gemini can analyze it
-        # upload_start = time.time()
-        # use_local = os.getenv("ENV", "local").lower() == "local"
-        # if not use_local:
-        #     print(f"☁️  Uploading trimmed video for analysis...")
-        #     gcs_trimmed_uri = self.upload_asset(local_trimmed, f"processed/{project_id}/{unique_trimmed_name}")
-        #     timings["Video upload"] = time.time() - upload_start
-        # else:
-        #     print(f"⏩ Skipping trimmed upload (Local Mode)")
-        #     gcs_trimmed_uri = gcs_video_uri # Fallback to original
+        # Determine if we are in local mode
+        use_local = os.getenv("ENV", "local").lower() == "local"
 
         # 2. Scripting
         step_start = time.time()
+        cleanup_segments = []
+
         print(f"📝 [2/5] Generating AI Script...")
         
-        script = analyze_video_full_pipeline(self.client, gcs_video_uri)
-        if script:
-            save_script(script, script_file)
+        analysis_result = analyze_video_full_pipeline(self.client, gcs_video_uri)
+        if analysis_result:
+            save_script(analysis_result, script_file)
         
-        if not script:
+        if not analysis_result or "script_timeline" not in analysis_result:
             print("❌ Error: Could not generate script.")
             return None
+            
+        script = analysis_result.get("script_timeline", [])
+        cleanup_segments = analysis_result.get("cleanup_segments", [])
         timings["AI Scripting"] = time.time() - step_start
 
         # 3. Voice Generation
@@ -162,7 +150,13 @@ class NarrationPipeline:
         assemble_start = time.time()
         final_video_name = f"final_{base_name}.mp4"
         final_video_path = os.path.join(project_dir, final_video_name)
-        self.video_service.assemble_steps(raw_video=local_trimmed, script=script, audio_files=audio_files, output_path=final_video_path)
+        self.video_service.assemble_steps(
+            raw_video=local_raw_path, 
+            script=script, 
+            audio_files=audio_files, 
+            output_path=final_video_path,
+            cleanup_segments=cleanup_segments
+        )
         timings["Video Assembly"] = time.time() - assemble_start
         
         # Create MP3
@@ -219,6 +213,7 @@ class NarrationPipeline:
                 "processed_video_url": gcs_video_url or final_video_path,
                 "processed_audio_url": gcs_audio_url or final_audio_path,
                 "script": script,
+                "cleanup_segments": cleanup_segments,
                 "project_id": project_id
             }
             
@@ -252,8 +247,6 @@ class NarrationPipeline:
             "audio_path": final_audio_path,
             "video_name": final_video_name,
             "audio_name": final_audio_name,
-            "trimmed_path": local_trimmed,
-            "trimmed_name": unique_trimmed_name,
             "script": script,
             "audio_files": audio_files,
             "gcs_video_uri": f"gs://{bucket_name}/processed/{project_id}/{final_video_name}" if not use_local else None,
