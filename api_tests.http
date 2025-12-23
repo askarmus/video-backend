@@ -1,0 +1,38 @@
+@baseUrl = http://localhost:8000
+@authToken = YOUR_SUPABASE_JW_TOKEN_HERE
+
+### Root Check
+GET {{baseUrl}}/
+Accept: application/json
+
+### List Videos
+GET {{baseUrl}}/videos/
+Authorization: Bearer {{authToken}}
+Accept: application/json
+
+### Get Single Video (Replace {video_id})
+@videoId = some-uuid-here
+GET {{baseUrl}}/videos/{{videoId}}
+Authorization: Bearer {{authToken}}
+Accept: application/json
+
+### Sync Timeline
+POST {{baseUrl}}/audio/sync_timeline
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "video_id": "test-video-id",
+  "edited_timeline_id": "item-id-to-update",
+  "updated_audio_url": "https://example.com/audio.mp3",
+  "updated_timeline": [
+    {
+      "id": "1",
+      "timestamp": "00:00:10",
+      "script": "Edited script text here"
+    }
+  ],
+  "time_delta": 2.5
+}
+
+

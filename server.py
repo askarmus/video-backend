@@ -2,6 +2,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.api.v1.endpoints.videos import router as video_router
+from src.api.v1.endpoints.audio import router as audio_router
 
 app = FastAPI(title="Breeo Backend API")
 
@@ -16,6 +17,7 @@ app.add_middleware(
 
 # Register routers
 app.include_router(video_router)
+app.include_router(audio_router)
 
 @app.get("/")
 async def root():

@@ -8,6 +8,7 @@ from src.api.auth import get_current_user
 from src.application.use_cases.get_video import GetVideoByIdUseCase
 from src.application.use_cases.list_videos import ListVideosUseCase
 from src.application.use_cases.create_video import CreateVideoUseCase
+from src.application.use_cases.create_video import CreateVideoUseCase
 from src.infrastructure.repositories.supabase_video_repository import SupabaseVideoRepository
 from src.application.pipeline_service import NarrationPipeline
 from src.infrastructure.google_client import client, creds
@@ -29,6 +30,8 @@ def list_videos_use_case():
 def create_video_use_case():
     repo = SupabaseVideoRepository()
     return CreateVideoUseCase(repo)
+
+
 
 def run_pipeline_background(video_id: str, video_uri: str, user_id: str, title: str, user_ip: str = "0.0.0.0", user_country: str = "unknown"):
     """
@@ -149,3 +152,5 @@ async def upload_complete(
         print(f"Upload Complete Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
