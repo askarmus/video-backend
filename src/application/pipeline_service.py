@@ -2,7 +2,7 @@ import os
 import uuid
 import time
 from datetime import datetime
-from src.application.script_service import create_ai_voice_script, load_script, save_script
+from src.application.script_service import analyze_video_full_pipeline, load_script, save_script
 from src.infrastructure.voice_service import generate_voiceover
 from src.infrastructure.storage_service import download_file, upload_file, parse_gcs_uri
 from src.application.video_service import VideoService
@@ -44,7 +44,12 @@ class NarrationPipeline:
             current_start = self._timestamp_to_seconds(seg['timestamp'])
             duration = self.video_service.get_audio_duration(seg['filename'])
             
+            # Add duration to script segment for future reference
+            if i < len(script):
+                script[i]["audio_duration"] = duration
+
             if current_start < next_available:
+
                 current_start = next_available
                 new_ts = self._seconds_to_timestamp(current_start)
                 seg['timestamp'] = new_ts
@@ -111,31 +116,28 @@ class NarrationPipeline:
         unique_trimmed_name = f"trimmed_{base_name}.mp4"
         local_trimmed = os.path.join(project_dir, unique_trimmed_name)
         
-        print(f"✂️ [1/5] Trimming Video...")
-        self.video_service.fast_trim(local_raw_path, local_trimmed)
-        timings["Video Trim"] = time.time() - trim_start
+        # print(f"✂️ [1/5] Trimming Video...")
+        # self.video_service.fast_trim(local_raw_path, local_trimmed)
+        # timings["Video Trim"] = time.time() - trim_start
         
         # Upload trimmed video to GCS so Gemini can analyze it
-        upload_start = time.time()
-        use_local = os.getenv("ENV", "local").lower() == "local"
-        if not use_local:
-            print(f"☁️  Uploading trimmed video for analysis...")
-            gcs_trimmed_uri = self.upload_asset(local_trimmed, f"processed/{project_id}/{unique_trimmed_name}")
-            timings["Video upload"] = time.time() - upload_start
-        else:
-            print(f"⏩ Skipping trimmed upload (Local Mode)")
-            gcs_trimmed_uri = gcs_video_uri # Fallback to original
+        # upload_start = time.time()
+        # use_local = os.getenv("ENV", "local").lower() == "local"
+        # if not use_local:
+        #     print(f"☁️  Uploading trimmed video for analysis...")
+        #     gcs_trimmed_uri = self.upload_asset(local_trimmed, f"processed/{project_id}/{unique_trimmed_name}")
+        #     timings["Video upload"] = time.time() - upload_start
+        # else:
+        #     print(f"⏩ Skipping trimmed upload (Local Mode)")
+        #     gcs_trimmed_uri = gcs_video_uri # Fallback to original
 
         # 2. Scripting
         step_start = time.time()
         print(f"📝 [2/5] Generating AI Script...")
         
-        script = load_script(script_file)
-        if not script:
-            # Use the trimmed video URI for better script accuracy
-            script = create_ai_voice_script(self.client, gcs_trimmed_uri)
-            if script:
-                save_script(script, script_file)
+        script = analyze_video_full_pipeline(self.client, gcs_video_uri)
+        if script:
+            save_script(script, script_file)
         
         if not script:
             print("❌ Error: Could not generate script.")

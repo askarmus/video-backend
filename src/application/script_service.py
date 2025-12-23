@@ -2,56 +2,73 @@ import json
 import os
 from google.genai import types
 
-def create_ai_voice_script(client, video_uri: str):
+def analyze_video_full_pipeline(client, video_uri: str):
     """
-    Generate AI voiceover script from video using Gemini
+    Analyzes video to generate a clean script AND identify segments to remove 
+    (dead air, static frames, noise), specifically handling running clocks.
     """
-    print("🎬 Creating AI voiceover script...")
+    print("🎬 Analyzing video for Clean Segments & Professional Script...")
     
     prompt = """
-        You are a professional product marketing narrator creating a polished SaaS demo voiceover.
-        Your job is to guide a first-time viewer through the product clearly and confidently.
+    You are an expert AI Video Editor and Product Marketer.
+    I have a raw recording of a software demo. It contains valuable UI actions mixed with "garbage" content.
 
-        The narration should cover the entire video timeline without missing sections.
+    Your Goal: Return a JSON object containing two lists: 
+    1. 'cleanup_segments' (parts to delete)
+    2. 'script' (polished narration for the good parts)
 
-        For each important moment (user action OR system state), create a script entry with:
+    ---
+    ### PART 1: IDENTIFY GARBAGE (The Cleanup)
+    Identify segments that ruin the viewer experience. These will be cut.
+    
+    **CRITICAL RULE FOR "DEAD FRAMES":** Your video contains a running CLOCK/TIMER (e.g., 01:10:42). **Ignore the clock numbers changing.** If the user is not clicking, typing, or moving the mouse significantly to interact with a UI element, it is a DEAD FRAME, even if the timer is running.
 
-        {
+    Mark segments for removal if:
+    1. **No User Interaction:** The user is waiting/idle (even if a clock/loader is moving).
+    2. **Background Noise:** Distracting audio (loudspeakers, static) where the narrator is silent.
+    3. **Mistakes:** User corrects themselves or clicks the wrong thing.
+
+    Structure for 'cleanup_segments':
+    {
+        "start_time": "MM:SS",
+        "end_time": "MM:SS",
+        "reason": "no_interaction" | "background_noise" | "mistake",
+        "description": "Brief reason (e.g., 'User waiting, clock ticking only')"
+    }
+
+    ---
+    ### PART 2: THE NARRATION (The Script)
+    Focus ONLY on the moments where the user performs a meaningful UI action (excluding the cleanup segments).
+    
+    **Narration Rules (STRICTLY FOLLOW):**
+    1. Speak as a guide, not as a user thinking aloud.
+    2. Each line must explain what is happening AND why it matters.
+    3. Use concise, polished language suitable for a website demo.
+    4. Avoid vague phrases. No filler words (okay, so, you know, then).
+    5. Maintain a smooth, logical flow. Do not repeat ideas.
+    6. Assume the viewer has never seen this product before.
+
+    **Coverage Requirements:**
+    - Cover the full workflow from start to finish.
+    - If the system updates or loads (and it's not being cut), narrate it briefly.
+    - Create 8-12 narration points that fully describe the workflow.
+
+    Structure for 'script_timeline':
+    {
         "timestamp": "MM:SS",
-        "ui_element": "Specific UI element or screen state",
-        "user_action": "Clear description of the action",
-        "voiceover_text": "Polished, professional narration written for a marketing demo",
+        "ui_element": "Specific UI element",
+        "user_action": "Clear description of action",
+        "voiceover_text": "Polished, professional narration",
         "pause_duration": 0.6
-        }
+    }
 
-        Narration rules:
-        1. Speak as a guide, not as a user thinking aloud
-        2. Each line must explain what is happening AND why it matters
-        3. Use concise, polished language suitable for a website demo
-        4. Avoid vague phrases and generic explanations
-        5. Maintain a smooth, logical flow from start to finish
-        6. Do not repeat the same idea or sentence across steps
-        7. Assume the viewer has never seen this product before
-
-        Never reuse or paraphrase the same narration sentence across multiple steps.
-        Each step must introduce new information or move the story forward.
-
-        Tone requirements:
-        - Professional
-        - Confident
-        - Clear
-        - Marketing-friendly
-        - Natural but not casual
-        - No filler words such as: okay, so, you know, then
-
-        Coverage requirements:
-        - Cover the full workflow from start to finish
-        - Do not leave unexplained gaps
-        - If the system updates, loads, or confirms an action, narrate it briefly
-        - Narration must feel continuous and intentional
-
-        Create 8-12 narration points that fully describe the workflow without long gaps.
-
+    ---
+    ### FINAL OUTPUT
+    Return strictly JSON with this structure:
+    {
+      "cleanup_segments": [ ... ],
+      "script_timeline": [ ... ]
+    }
     """
     
     try:
@@ -63,8 +80,8 @@ def create_ai_voice_script(client, video_uri: str):
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                temperature=0.2,
-                max_output_tokens=2000
+                temperature=0.1, # Keep strict for analysis
+                max_output_tokens=8192
             )
         )
         
@@ -72,7 +89,8 @@ def create_ai_voice_script(client, video_uri: str):
         
     except Exception as e:
         print(f"Error: {e}")
-        return []
+        return {"cleanup_segments": [], "script_timeline": []}
+
 
 def load_script(file_path: str):
     """
