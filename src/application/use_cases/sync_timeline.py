@@ -39,8 +39,12 @@ class SyncTimelineUseCase:
         script = video.video_data.get("script", [])
         project_id = video.video_data.get("project_id", "default")
         
-        # Determine bucket from existing processed URL
-        sample_url = video.video_data.get("processed_video_url") or ""
+        # Determine bucket from existing processed URLs (preferring audio-related ones first)
+        sample_url = (
+            video.video_data.get("processed_audio_url") or 
+            video.video_data.get("processed_video_url") or 
+            (script[0].get("audio_url") if script else "")
+        )
         bucket_name, _ = parse_gcs_uri(sample_url)
         if not bucket_name:
             # Fallback to env or assume from video_id
@@ -87,21 +91,22 @@ class SyncTimelineUseCase:
                         print(f"⚠️ Warning: No audio_url for segment {seg_id}")
 
             # 2. Resolve Timeline (Ripple Effect)
-            print("⌛ Recalculating timeline to prevent collisions...")
+            print("⌛ Recalculating timeline to remove gaps and prevent collisions...")
             next_available = 0.0
             gap = 0.3 # 300ms gap
             
             for i, seg_meta in enumerate(audio_files):
-                current_start = self._timestamp_to_seconds(seg_meta['timestamp'])
+                # Always place segment at the next available slot to maintain sequential flow
+                new_start = next_available
                 duration = video_service.get_audio_duration(seg_meta['filename'])
                 
-                if current_start < next_available:
-                    current_start = next_available
-                    new_ts = self._seconds_to_timestamp(current_start)
-                    seg_meta['timestamp'] = new_ts
-                    script[i]['timestamp'] = new_ts
+                new_ts = self._seconds_to_timestamp(new_start)
+                seg_meta['timestamp'] = new_ts
+                script[i]['timestamp'] = new_ts
                 
-                next_available = current_start + duration + gap
+                # Update next available slot
+                next_available = new_start + duration + gap
+
 
             # 3. Concatenate Master Audio
             final_audio_path = os.path.join(tmp_dir, f"narration_updated.mp3")

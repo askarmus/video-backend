@@ -12,6 +12,21 @@
             },
             "args": [],
             "jinja": true
+        },
+        {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Python: Run Test Script",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/main.test.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
         }
     ]
 }
