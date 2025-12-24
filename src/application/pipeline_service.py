@@ -40,23 +40,32 @@ class NarrationPipeline:
         gap = 0.3 # 300ms gap
         collisions = 0
 
+        cleaned_acc = 0.0
         for i, seg in enumerate(audio_files):
-            current_start = self._timestamp_to_seconds(seg['timestamp'])
-            duration = self.video_service.get_audio_duration(seg['filename'])
+            audio_duration = self.video_service.get_audio_duration(seg['filename'])
             
-            # Add duration to script segment for future reference
-            if i < len(script):
-                script[i]["audio_duration"] = duration
-
-            if current_start < next_available:
-
-                current_start = next_available
-                new_ts = self._seconds_to_timestamp(current_start)
+            # 1. Resolve collisions in the ORIGINAL timeline (for cutting logic)
+            current_start_original = self._timestamp_to_seconds(seg['timestamp'])
+            if current_start_original < next_available:
+                current_start_original = next_available
+                new_ts = self._seconds_to_timestamp(current_start_original)
                 seg['timestamp'] = new_ts
-                script[i]['timestamp'] = new_ts
+                if i < len(script):
+                    script[i]['timestamp'] = new_ts
                 collisions += 1
             
-            next_available = current_start + duration + gap
+            # 2. Compute CLEANED timeline properties (for frontend/player)
+            if i < len(script):
+                script[i]["start_time"] = round(cleaned_acc, 3)
+                script[i]["duration"] = round(audio_duration, 3)
+                script[i]["end_time"] = round(cleaned_acc + audio_duration, 3)
+                script[i]["audio_duration"] = round(audio_duration, 3)
+                
+            # Increment the cleaned accumulator
+            cleaned_acc += audio_duration
+            
+            # Update next_available for the ORIGINAL timeline collision check
+            next_available = current_start_original + audio_duration + gap
 
         if collisions > 0:
             print(f"  ⚠️ Fixed {collisions} overlapping segments.")

@@ -15,7 +15,7 @@ def analyze_video_full_pipeline(client, video_uri: str):
 
     Your Goal: Return a JSON object containing two lists: 
     1. 'cleanup_segments' (parts to delete)
-    2. 'script' (polished narration for the good parts)
+    2. 'script_timeline' (polished narration for the good parts)
 
     ---
     ### PART 1: IDENTIFY GARBAGE (The Cleanup)
@@ -62,6 +62,12 @@ def analyze_video_full_pipeline(client, video_uri: str):
         "pause_duration": 0.6
     }
 
+    **Timestamp & Duration Rules (CRITICAL):**
+    1. **Valid Ranges Only:** Every `timestamp` in `script_timeline` MUST fall within a "kept" segment (not in `cleanup_segments`). 
+    2. **Avoid "Garbage" Zones:** If an action you want to narrate falls inside a removed segment, snap the `timestamp` to the beginning of the NEXT valid kept range.
+    3. **Continuous Flow:** Ensure the `script_timeline` covers the entire duration of the kept segments without significant gaps.
+    4. **Last Frame Safety:** If your narrations exceed the available video duration, the system will automatically freeze the last frame to cover the audio.
+
     ---
     ### FINAL OUTPUT
     Return strictly JSON with this structure:
@@ -91,7 +97,8 @@ def analyze_video_full_pipeline(client, video_uri: str):
         print(f"Error: {e}")
         return {"cleanup_segments": [], "script_timeline": []}
 
-
+ 
+ 
 def load_script(file_path: str):
     """
     Read script data from a local JSON file
