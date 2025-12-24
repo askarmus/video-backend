@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import Optional, List, Any
 
 class UploadCompleteRequest(BaseModel):
     video_uri: str
@@ -30,3 +30,6 @@ class ScriptUpdate(BaseModel):
 class BatchAudioEditRequest(BaseModel):
     video_id: str
     updates: list[ScriptUpdate]
+
+# --- Dynamic Configuration Schema ---
+# (Using direct Dict[str, Any] in endpoints for flexibility)

@@ -1,19 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from datetime import datetime
-from typing import Optional
-import os
-import traceback
-
 from src.api.auth import get_current_user
-from src.application.use_cases.get_video import GetVideoByIdUseCase
-from src.application.use_cases.list_videos import ListVideosUseCase
-from src.application.use_cases.create_video import CreateVideoUseCase
-from src.application.use_cases.create_video import CreateVideoUseCase
-from src.infrastructure.repositories.supabase_video_repository import SupabaseVideoRepository
-from src.application.pipeline_service import NarrationPipeline
-from src.infrastructure.google_client import client, creds
-from src.domain.entities.video import Video
 from src.api.v1.schemas.video import UploadCompleteRequest
+from src.application.use_cases.update_video_config import UpdateVideoConfigUseCase
+from fastapi import Body, APIRouter, Depends, HTTPException, BackgroundTasks
+from typing import Dict, Any
 from src.config import PROJECT_ROOT
 
 router = APIRouter(prefix="/videos", tags=["Videos"])
@@ -30,6 +19,10 @@ def list_videos_use_case():
 def create_video_use_case():
     repo = SupabaseVideoRepository()
     return CreateVideoUseCase(repo)
+
+def update_config_use_case():
+    repo = SupabaseVideoRepository()
+    return UpdateVideoConfigUseCase(repo)
 
 
 
@@ -152,5 +145,35 @@ async def upload_complete(
         print(f"Upload Complete Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/{video_id}/settings")
+# --- Dynamic Configuration Schema ---
+# We use a raw dictionary in the endpoint for maximum flexibility
+async def update_video_settings(
+    video_id: str,
+    config: Dict[str, Any] = Body(..., description="The partial video_data to update/merge"),
+    user=Depends(get_current_user),
+    use_case: UpdateVideoConfigUseCase = Depends(update_config_use_case)
+):
+    """
+    Update partial fields within video_data (branding, background, music).
+    You can pass the full object OR just one single field.
+    """
+    try:
+        if not config:
+            raise HTTPException(status_code=400, detail="No config data provided")
+            
+        result = use_case.execute(video_id, user.id, config)
+        return {"status": "success", "video_data": result}
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        print(f"Update Config API Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
