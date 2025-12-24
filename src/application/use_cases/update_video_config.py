@@ -18,8 +18,7 @@ class UpdateVideoConfigUseCase:
         if video.created_by != user_id:
             raise PermissionError("Unauthorized access to this video configuration")
 
-        # 2. Update via Repository 
-        # The repository is already designed to perform a merge on 'video_data'
-        updated_video = self.video_repo.update(video_id, video_data=config_patch)
+        # 2. Update via Repository (passing the existing video to save a DB fetch)
+        use_case_result = self.video_repo.update(video_id, existing_video=video, video_data=config_patch)
         
-        return updated_video.video_data if updated_video else None
+        return use_case_result.video_data if use_case_result else None

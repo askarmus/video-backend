@@ -104,23 +104,19 @@ class SupabaseVideoRepository(VideoRepository):
             raise e
 
 
-    def update(self, video_id: str, **kwargs) -> Optional[Video]:
+    def update(self, video_id: str, existing_video: Optional[Video] = None, **kwargs) -> Optional[Video]:
         """
-        Updates specific fields of a video record.
-        Automatically manages the 'updated_at' timestamp.
+        Updates specific fields. 
+        Pass 'existing_video' to save a database round-trip.
         """
         try:
-            if not kwargs:
-                return self.get_by_id(video_id)
-
             payload = {**kwargs}
 
-            # If updating video_data, perform a top-level merge with existing data
+            # If updating video_data, perform a top-level merge
             if "video_data" in kwargs:
-                existing = self.get_by_id(video_id)
-                if existing and existing.video_data:
-                    # Merge new data into existing data (new overrides on key collision)
-                    merged_data = {**existing.video_data, **kwargs.get("video_data", {})}
+                video = existing_video or self.get_by_id(video_id)
+                if video and video.video_data:
+                    merged_data = {**video.video_data, **kwargs.get("video_data", {})}
                     payload["video_data"] = merged_data
 
             payload["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -133,11 +129,26 @@ class SupabaseVideoRepository(VideoRepository):
                 .execute()
             )
 
-            if not res.data:
-                raise Exception(f"Video with ID {video_id} not found or update failed")
+            if not res.data or len(res.data) == 0:
+                return None
+                
+            # Convert raw result back to Video entity immediately without 3rd fetch
+            item = res.data[0]
+            v_data = item.get("video_data") or {}
+            if isinstance(v_data, str): 
+                try: v_data = json.loads(v_data)
+                except: v_data = {}
 
-            # Return the updated entity
-            return self.get_by_id(video_id)
+            return Video(
+                id=item["id"],
+                created_by=item["created_by"],
+                video_data=v_data,
+                title=item.get("title", "Untitled"),
+                language=item.get("language", "en"),
+                status=item.get("status", "processing"),
+                thumbnail_url=item.get("thumbnail_url"),
+                is_deleted=item.get("is_deleted", False)
+            )
 
         except Exception as e:
             print(f"Update video repository error: {e}")
