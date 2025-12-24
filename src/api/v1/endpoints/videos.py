@@ -1,8 +1,17 @@
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Body
+from typing import Optional, Dict, Any
+import os
+import traceback
+
 from src.api.auth import get_current_user
-from src.api.v1.schemas.video import UploadCompleteRequest
+from src.application.use_cases.get_video import GetVideoByIdUseCase
+from src.application.use_cases.list_videos import ListVideosUseCase
+from src.application.use_cases.create_video import CreateVideoUseCase
 from src.application.use_cases.update_video_config import UpdateVideoConfigUseCase
-from fastapi import Body, APIRouter, Depends, HTTPException, BackgroundTasks
-from typing import Dict, Any
+from src.infrastructure.repositories.supabase_video_repository import SupabaseVideoRepository
+from src.application.pipeline_service import NarrationPipeline
+from src.infrastructure.google_client import client, creds
+from src.api.v1.schemas.video import UploadCompleteRequest
 from src.config import PROJECT_ROOT
 
 router = APIRouter(prefix="/videos", tags=["Videos"])
@@ -164,8 +173,8 @@ async def update_video_settings(
         if not config:
             raise HTTPException(status_code=400, detail="No config data provided")
             
-        result = use_case.execute(video_id, user.id, config)
-        return {"status": "success", "video_data": result}
+        use_case.execute(video_id, user.id, config)
+        return {"status": "success"}
         
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
