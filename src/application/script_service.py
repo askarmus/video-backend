@@ -1,6 +1,42 @@
 import json
 import os
+from typing import Dict, Any
 from google.genai import types
+
+def get_default_project_template() -> Dict[str, Any]:
+    """
+    Returns the baseline 'Master Envelope' for a video project.
+    """
+    return {
+        "intro": {
+            "enabled": False,
+            "text": "",
+            "font_size": 48,
+            "duration": 2,
+            "color": "#ffffff",
+            "align": "center"
+        },
+        "outro": {
+            "enabled": False,
+            "text": "Welcome message...",
+            "font_size": 48,
+            "duration": 2,
+            "color": "#ffffff",
+            "align": "center"
+        },
+        "music": {
+            "enabled": False,
+            "url": "/audi_clip/bg_audio1_clip.mp3",
+            "volume": 0.3
+        },
+        "background": "",
+        "script": [],
+        "cleanup_segments": [],
+        "metadata": {
+            "version": "1.0",
+            "generated_at": ""
+        }
+    }
 
 def analyze_video_full_pipeline(client, video_uri: str):
     """

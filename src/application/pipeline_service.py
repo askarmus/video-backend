@@ -2,7 +2,12 @@ import os
 import uuid
 import time
 from datetime import datetime
-from src.application.script_service import analyze_video_full_pipeline, load_script, save_script
+from src.application.script_service import (
+    analyze_video_full_pipeline, 
+    load_script, 
+    save_script, 
+    get_default_project_template
+)
 from src.infrastructure.voice_service import generate_voiceover
 from src.infrastructure.storage_service import download_file, upload_file, parse_gcs_uri
 from src.application.video_service import VideoService
@@ -120,6 +125,11 @@ class NarrationPipeline:
         
         script_file = os.path.join(project_dir, "ai_voiceover_script.json")
         
+        # 1. Initialize Master Envelope
+        project_config = get_default_project_template()
+        project_config["metadata"]["generated_at"] = timestamp
+        project_config["metadata"]["project_id"] = project_id
+        
         # Determine if we are in local mode
         use_local = os.getenv("ENV", "local").lower() == "local"
 
@@ -130,8 +140,6 @@ class NarrationPipeline:
         print(f"📝 [2/5] Generating AI Script...")
         
         analysis_result = analyze_video_full_pipeline(self.client, gcs_video_uri)
-        if analysis_result:
-            save_script(analysis_result, script_file)
         
         if not analysis_result or "script_timeline" not in analysis_result:
             print("❌ Error: Could not generate script.")
@@ -139,6 +147,11 @@ class NarrationPipeline:
             
         script = analysis_result.get("script_timeline", [])
         cleanup_segments = analysis_result.get("cleanup_segments", [])
+        
+        # Inject AI results into envelope
+        project_config["script"] = script
+        project_config["cleanup_segments"] = cleanup_segments
+        
         timings["AI Scripting"] = time.time() - step_start
 
         # 3. Voice Generation
@@ -195,8 +208,8 @@ class NarrationPipeline:
                 if i < len(script):
                     script[i]["audio_url"] = audio["filename"]
 
-        # Save the updated script (with IDs and URLs) locally
-        save_script(script, script_file)
+        # Save the updated Master Envelope (with IDs, URLs, and calculated times)
+        save_script(project_config, script_file)
         
         # Upload final products
         if not use_local:
@@ -221,9 +234,9 @@ class NarrationPipeline:
                 "user_country": os.getenv("USER_COUNTRY", "unknown"),
                 "processed_video_url": gcs_video_url or final_video_path,
                 "processed_audio_url": gcs_audio_url or final_audio_path,
-                "script": script,
-                "cleanup_segments": cleanup_segments,
-                "project_id": project_id
+                "project_id": project_id,
+                # Include the full project envelope in the video data
+                **project_config
             }
             
             use_case.execute(
