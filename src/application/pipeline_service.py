@@ -39,44 +39,43 @@ class NarrationPipeline:
         return f"{m:02d}:{s:05.2f}"
 
     def resolve_timeline(self, audio_files, script):
-        """Adjusts timestamps in both audio_files and script to prevent overlapping."""
         print(f"⌛ [Timeline] Resolving collisions...")
         next_available = 0.0
-        gap = 0.3 # 300ms gap
+        gap = 0.3
         collisions = 0
 
-        cleaned_acc = 0.0
         for i, seg in enumerate(audio_files):
             audio_duration = self.video_service.get_audio_duration(seg['filename'])
-            
-            # 1. Resolve collisions in the ORIGINAL timeline (for cutting logic)
-            current_start_original = self._timestamp_to_seconds(seg['timestamp'])
-            if current_start_original < next_available:
-                current_start_original = next_available
-                new_ts = self._seconds_to_timestamp(current_start_original)
+
+            # Original intended start
+            original_start = self._timestamp_to_seconds(seg['timestamp'])
+
+            # Prevent overlap, but DO NOT collapse gaps
+            start_time = max(original_start, next_available)
+
+            if start_time > original_start:
+                collisions += 1
+                new_ts = self._seconds_to_timestamp(start_time)
                 seg['timestamp'] = new_ts
                 if i < len(script):
                     script[i]['timestamp'] = new_ts
-                collisions += 1
-            
-            # 2. Compute CLEANED timeline properties (for frontend/player)
+
+            end_time = start_time + audio_duration
+
+            # Write narration timeline explicitly
             if i < len(script):
-                script[i]["start_time"] = round(cleaned_acc, 3)
+                script[i]["start_time"] = round(start_time, 3)
                 script[i]["duration"] = round(audio_duration, 3)
-                script[i]["end_time"] = round(cleaned_acc + audio_duration, 3)
+                script[i]["end_time"] = round(end_time, 3)
                 script[i]["audio_duration"] = round(audio_duration, 3)
-                
-            # Increment the cleaned accumulator
-            cleaned_acc += audio_duration
-            
-            # Update next_available for the ORIGINAL timeline collision check
-            next_available = current_start_original + audio_duration + gap
+
+            next_available = end_time + gap
 
         if collisions > 0:
             print(f"  ⚠️ Fixed {collisions} overlapping segments.")
         else:
             print(f"  ✅ No audio collisions detected.")
-            
+
         return audio_files, script
 
     def download_video(self, gcs_uri):
@@ -226,10 +225,17 @@ class NarrationPipeline:
             # Fetch final properties
             processed_file_type = os.path.splitext(final_video_path)[1].replace('.', '')
             processed_duration = self.video_service.get_duration(final_video_path)
-            
+
+            narration_end_time = max(
+                seg["end_time"]
+                for seg in script
+                if not seg.get("isDeleted", False)
+            )
             metadata = {
                 "file_type": processed_file_type,
                 "duration": processed_duration,
+                "narration_duration": narration_end_time,  # audio/script duration
+                "has_silent_tail": processed_duration > narration_end_time,
                 "user_ip": os.getenv("USER_IP", "0.0.0.0"),
                 "user_country": os.getenv("USER_COUNTRY", "unknown"),
                 "processed_video_url": gcs_video_url or final_video_path,
