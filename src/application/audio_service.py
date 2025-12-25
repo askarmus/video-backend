@@ -13,6 +13,14 @@ class AudioService:
             raise RuntimeError(f"Command failed:\n{' '.join(cmd)}\n\nSTDERR:\n{p.stderr[:4000]}")
         return p.stdout, p.stderr
 
+    def generate_silence(self, duration, output_path):
+        """Generates a silence MP3 file of the given duration."""
+        self.run_cmd([
+            "ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=mono", 
+            "-t", str(duration), "-q:a", "9", "-acodec", "libmp3lame", output_path
+        ])
+        return output_path
+
     def concat_audio_files(self, audio_files, output_path, temp_dir):
         """
         Concatenates multiple audio files into a single MP3.

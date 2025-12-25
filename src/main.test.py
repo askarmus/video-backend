@@ -16,12 +16,12 @@ from src.application.use_cases.sync_timeline import SyncTimelineUseCase
 def test_batch_audio_edit():
     # --- CONFIGURATION ---
     # Replace these with real IDs from your Supabase database for testing
-    video_id = "50a470ff-4207-485a-8a26-4d31ea8a775c" 
+    video_id = "42a12c4e-22bf-4a72-9ec5-440a7b1fe2ab" 
     user_id = "b438b72f-d935-4fba-b3e8-8b2a5ed941b3"
     
     updates = [
         {
-            "id": "ea33ab33",
+            "id": "74804ee1",
             "voiceover_text": "This is a test update for the first segment."
         }
     ]
@@ -48,10 +48,12 @@ def test_batch_audio_edit():
             creds=creds
         )
 
+        import json
         print("\n✨ Success!")
-        print(f"Status: {result.get('status')}")
-        print(f"New Master Audio: {result.get('processed_audio_url')}")
-        print(f"Updated Script Snippet: {result.get('script')[0] if result.get('script') else 'No script'}")
+        print(f"New Master Audio: {result.get('merged_audio_url')}")
+        print(f"Total Duration: {result.get('total_duration')}s")
+        print("\n📜 Full Updated Script:")
+        print(json.dumps(result.get('script'), indent=2))
 
     except Exception as e:
         print(f"\n❌ Execution Failed: {str(e)}")

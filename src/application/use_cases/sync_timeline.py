@@ -1,34 +1,28 @@
 from typing import Any
+import os
+import tempfile
+import shutil
+import time
 from src.domain.repositories.video_repository import VideoRepository
+from src.infrastructure.voice_service import generate_voiceover
+from src.infrastructure.storage_service import download_file, upload_file, parse_gcs_uri
+from src.application.audio_service import AudioService
+from src.application.video_service import VideoService
 
 class SyncTimelineUseCase:
     def __init__(self, video_repo: VideoRepository):
         self.video_repo = video_repo
-
-    def _timestamp_to_seconds(self, ts):
-        if not ts: return 0.0
-        parts = ts.split(':')
-        if len(parts) == 1:
-            return float(parts[0])
-        return int(parts[0]) * 60 + float(parts[1])
-
-    def _seconds_to_timestamp(self, seconds):
-        m = int(seconds // 60)
-        s = seconds % 60
-        return f"{m:02d}:{s:05.2f}"
+        self.audio_service = AudioService()
+        self.video_service = VideoService()
 
     def execute_batch(self, video_id: str, user_id: str, updates: list[dict[str, str]], creds=None):
         """
-        Handles multiple script updates, regenerates audio, and re-calculates the timeline.
+        Surgical Master-Slicing Logic:
+        1. Downloads the existing Master Audio once.
+        2. Generates only the new voice segments.
+        3. Uses FFmpeg to 'slice' unchanged parts from the Master.
+        4. Re-concatenates into a new version.
         """
-        import os
-        import tempfile
-        import shutil
-        from src.infrastructure.voice_service import generate_voiceover
-        from src.infrastructure.storage_service import download_file, upload_file, parse_gcs_uri
-        from src.application.audio_service import AudioService
-        from src.application.video_service import VideoService
-
         video = self.video_repo.get_by_id(video_id)
         if not video:
             raise ValueError(f"Video {video_id} not found")
@@ -39,110 +33,175 @@ class SyncTimelineUseCase:
         script = video.video_data.get("script", [])
         project_id = video.video_data.get("project_id", "default")
         
-        # Determine bucket from existing processed URLs (preferring audio-related ones first)
-        sample_url = (
-            video.video_data.get("processed_audio_url") or 
-            video.video_data.get("processed_video_url") or 
-            (script[0].get("audio_url") if script else "")
-        )
-        bucket_name, _ = parse_gcs_uri(sample_url)
+        # Determine Source Master
+        master_url = video.video_data.get("processed_audio_url")
+        bucket_name, master_blob = parse_gcs_uri(master_url) if master_url else (None, None)
         if not bucket_name:
-            # Fallback to env or assume from video_id
             bucket_name = os.getenv("VIDEO_BUCKET", "evalsy-storage")
 
-        # Prep working dir
-        tmp_dir = tempfile.mkdtemp(prefix="batch_audio_")
+        tmp_dir = tempfile.mkdtemp(prefix="audio_surgical_")
         voiceovers_dir = os.path.join(tmp_dir, "voiceovers")
         os.makedirs(voiceovers_dir, exist_ok=True)
         
-        audio_service = AudioService()
-        video_service = VideoService()
-        
         try:
-            update_map = {u["id"]: u["voiceover_text"] for u in updates}
-            audio_files = []
-            
-            # 1. Update text and gather/generate audio
-            for i, segment in enumerate(script):
-                seg_id = segment.get("id")
-                is_updated = seg_id in update_map
-                
-                if is_updated:
-                    segment["voiceover_text"] = update_map[seg_id]
-                    print(f"🎤 Regenerating audio for segment {seg_id}...")
-                    # Generate single segment audio
-                    new_audio = generate_voiceover([segment], creds, output_dir=voiceovers_dir)
-                    audio_files.append(new_audio[0])
+            # 1. PREP MASTER (Download once)
+            local_old_master = None
+            master_duration = 0
+            if bucket_name and master_blob:
+                print(f"📥 Downloading base master for surgical slicing...")
+                local_old_master_path = os.path.join(tmp_dir, "old_master.mp3")
+                if download_file(bucket_name, master_blob, local_old_master_path):
+                    local_old_master = local_old_master_path
+                    master_duration = self.video_service.get_audio_duration(local_old_master)
+                    print(f"📏 Master check: {master_duration}s total.")
                 else:
-                    # Download existing audio from GCS
-                    gcs_url = segment.get("audio_url")
-                    if gcs_url and gcs_url.startswith("gs://"):
-                        b, blob = parse_gcs_uri(gcs_url)
-                        local_path = os.path.join(voiceovers_dir, os.path.basename(blob))
-                        download_file(b, blob, local_path)
-                        
-                        audio_files.append({
-                            "id": seg_id,
-                            "filename": local_path,
-                            "timestamp": segment["timestamp"],
-                            "text": segment["voiceover_text"]
-                        })
+                    print(f"⚠️ Master download failed. Falling back to individual segment downloads.")
+                    local_old_master = None
+
+            update_map = {u["id"]: u["voiceover_text"] for u in updates}
+            processed_audio_list = []
+            
+            # 2. GATHER SECTIONS (Regen OR Slice OR Full-Download Fallback)
+            for segment in script:
+                seg_id = segment.get("id")
+                voice_text = update_map.get(seg_id)
+                local_seg_path = os.path.join(voiceovers_dir, f"{seg_id}.mp3")
+
+                if voice_text is not None or not (segment.get("audio_url") or segment.get("url") or local_old_master):
+                    # REGENERATE (If updated OR if audio is completely missing from all sources)
+                    gen_reason = "Updated" if voice_text is not None else "Missing Source"
+                    print(f"🎤 [{gen_reason}] {seg_id}...")
+                    
+                    if voice_text is not None:
+                        segment["voiceover_text"] = voice_text
+                    
+                    new_meta = generate_voiceover([segment], creds, output_dir=voiceovers_dir)[0]
+                    local_seg_path = new_meta["filename"]
+                
+                else:
+                    # Not being updated. Try Slice, then GS Fallback, then HTTP Fallback
+                    start = segment.get("start_time", 0.0)
+                    dur = segment.get("audio_duration", 1.0)
+                    if dur <= 0: dur = 0.5
+                    end = start + dur
+
+                    if local_old_master and end <= (master_duration + 0.1):
+                        print(f"✂️ [Exact Slice] {seg_id} | Range: {start}s - {end}s")
+                        self.audio_service.run_cmd([
+                            "ffmpeg", "-y", "-i", local_old_master,
+                            "-filter_complex", f"[0:a]atrim=start={start}:end={end},asetpts=PTS-STARTPTS[out]",
+                            "-map", "[out]",
+                            "-acodec", "libmp3lame", "-ar", "44100", "-b:a", "128k", 
+                            local_seg_path
+                        ])
                     else:
-                        print(f"⚠️ Warning: No audio_url for segment {seg_id}")
-
-            # 2. Resolve Timeline (Ripple Effect)
-            print("⌛ Recalculating timeline to remove gaps and prevent collisions...")
-            next_available = 0.0
-            gap = 0.3 # 300ms gap
-            
-            for i, seg_meta in enumerate(audio_files):
-                # Always place segment at the next available slot to maintain sequential flow
-                new_start = next_available
-                duration = video_service.get_audio_duration(seg_meta['filename'])
+                        gcs_url = segment.get("audio_url") or segment.get("url")
+                        print(f"🪂 [Source Search] {seg_id} from {gcs_url}")
+                        
+                        if gcs_url.startswith("gs://"):
+                            sb, sblob = parse_gcs_uri(gcs_url)
+                            download_file(sb, sblob, local_seg_path)
+                        elif gcs_url.startswith("http"):
+                            import requests
+                            print(f"🌐 [HTTP Download] {seg_id}")
+                            r = requests.get(gcs_url, stream=True)
+                            with open(local_seg_path, 'wb') as f:
+                                for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
+                        else:
+                            # Final fallback: if URL is weird, just regen to be safe
+                            print(f"🎤 [Deep Fallback Regen] {seg_id}")
+                            new_meta = generate_voiceover([segment], creds, output_dir=voiceovers_dir)[0]
+                            local_seg_path = new_meta["filename"]
                 
-                new_ts = self._seconds_to_timestamp(new_start)
-                seg_meta['timestamp'] = new_ts
-                script[i]['timestamp'] = new_ts
+                duration = self.video_service.get_audio_duration(local_seg_path)
+                processed_audio_list.append({
+                    "id": seg_id,
+                    "local_path": local_seg_path,
+                    "duration": duration,
+                    "segment": segment
+                })
+
+            # 3. REBUILD TIMELINE (Sequential Ripple Sync)
+            current_time = 0.0
+            concat_list = []
+            gap = 0.5 # Default breath/pause gap
+
+            for i, item in enumerate(processed_audio_list):
+                seg = item["segment"]
+                new_dur = round(item["duration"], 3)
                 
-                # Update next available slot
-                next_available = new_start + duration + gap
+                # Capture original values for delta calculation
+                orig_start = seg.get("start_time", 0.0)
+                orig_dur = seg.get("audio_duration", 0.0)
+                
+                # Apply New Sequential Timing
+                seg["start_time"] = round(current_time, 3)
+                seg["audio_duration"] = new_dur
+                seg["duration"] = new_dur
+                seg["end_time"] = round(current_time + new_dur, 3)
+                
+                # Calculate Deltas (User Request: + if longer, - if shorter)
+                seg["audio_delta"] = round(new_dur - orig_dur, 3)
+                seg["timeline_shift"] = round(seg["start_time"] - orig_start, 3)
+                
+                concat_list.append({"filename": item["local_path"]})
+                
+                # Handle Pauses
+                if i < len(processed_audio_list) - 1:
+                    pause = seg.get("pause_duration", gap)
+                    seg["pause_duration"] = pause # Ensure it's persisted
+                    
+                    silence_path = os.path.join(tmp_dir, f"gap_{i}.mp3")
+                    self.audio_service.generate_silence(pause, silence_path)
+                    concat_list.append({"filename": silence_path})
+                    
+                    current_time = seg["end_time"] + pause
+                else:
+                    current_time = seg["end_time"]
 
-
-            # 3. Concatenate Master Audio
-            final_audio_path = os.path.join(tmp_dir, f"narration_updated.mp3")
-            audio_service.concat_audio_files(audio_files, final_audio_path, tmp_dir)
+            # 4. EXPORT & SYNC
+            master_name = f"voice_v{int(time.time())}.mp3"
+            local_final = os.path.join(tmp_dir, master_name)
+            self.audio_service.concat_audio_files(concat_list, local_final, tmp_dir)
             
-            # 4. Upload Assets
             # Upload new master
-            master_blob = f"processed/{project_id}/narration_updated_{int(os.path.getmtime(final_audio_path))}.mp3"
-            new_master_url = upload_file(bucket_name, final_audio_path, master_blob)
+            final_url = upload_file(bucket_name, local_final, f"processed/{project_id}/{master_name}")
             
-            # Upload ONLY the newly generated voiceovers
-            for i, seg_id in enumerate(update_map.keys()):
-                # Find the segment in audio_files
-                new_seg = next((a for a in audio_files if a['id'] == seg_id), None)
-                if new_seg:
-                    blob_name = f"processed/{project_id}/voiceovers/{os.path.basename(new_seg['filename'])}"
-                    new_seg_url = upload_file(bucket_name, new_seg['filename'], blob_name)
-                    # Update script with new GCS URL
+            # Upload updated segments only
+            for item in processed_audio_list:
+                if item["id"] in update_map:
+                    blob = f"processed/{project_id}/voiceovers/{os.path.basename(item['local_path'])}"
+                    seg_url = upload_file(bucket_name, item["local_path"], blob)
                     for s in script:
-                        if s['id'] == seg_id:
-                            s['audio_url'] = new_seg_url
-            
-            # 5. Save back to DB
-            updated_video_data = {
+                        if s["id"] == item["id"]: s["audio_url"] = seg_url
+
+            # MANDATORY RULE: Global duration MUST match final script end_time
+            if script:
+                total_duration = round(script[-1]["end_time"], 3)
+            else:
+                total_duration = 0.0
+
+            # Atomic Database Update (Updating both script and the global duration invariant)
+            updated_data = {
                 "script": script,
-                "processed_audio_url": new_master_url
+                "processed_audio_url": final_url,
+                "duration": total_duration
             }
-            self.video_repo.update(video_id, video_data=updated_video_data)
+            
+            # Validation Assertion (Hard Error if broken)
+            if script and abs(updated_data["duration"] - script[-1]["end_time"]) > 0.01:
+                raise RuntimeError(f"Timeline Invariant Broken: Duration ({updated_data['duration']}) != Final End Time ({script[-1]['end_time']})")
+
+            self.video_repo.update(video_id, video_data=updated_data)
             
             return {
-                "status": "success",
-                "processed_audio_url": new_master_url,
+                "merged_audio_url": final_url,
+                "total_duration": total_duration,
                 "script": script
             }
 
+        except Exception as e:
+            print(f"❌ Surgical Build Error: {e}")
+            raise
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
-
-   
