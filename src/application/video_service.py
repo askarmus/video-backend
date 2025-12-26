@@ -220,17 +220,26 @@ class VideoService:
             str(output_path)
         ])
 
-    def assemble_steps(self, raw_video, script, audio_files, output_path, cleanup_segments=None):
+    def assemble_steps(
+        self,
+        raw_video,
+        script,
+        audio_files,
+        output_path,
+        cleanup_segments=None
+    ):
         """
-        Assembles video by cutting segments for each script item, 
-        while specifically skipping 'cleanup_segments' (garbage parts).
+        Assemble video steps driven by script timestamps.
+        Audio files are used ONLY to calculate duration.
+        No audio is attached to the output video.
         """
+
         tmp = Path(tempfile.mkdtemp(prefix="steps_"))
         step_clips = []
-        
+
         total_v_dur = self.get_duration(raw_video)
-        
-        # Convert cleanup segments to second-ranges
+
+        # Convert cleanup segments to second ranges
         garbage_ranges = []
         if cleanup_segments:
             for seg in cleanup_segments:
@@ -238,85 +247,106 @@ class VideoService:
                 e = self._timestamp_to_seconds(seg["end_time"])
                 garbage_ranges.append((s, e))
 
+        garbage_ranges.sort()
+
         try:
             for idx, step in enumerate(script):
-                # 1. Gather Audio Info
-                a = audio_files[idx]
-                audio_path = a["filename"]
+                # ----------------------------
+                # 1. Audio duration (timing driver only)
+                # ----------------------------
+                audio_path = audio_files[idx]["filename"]
                 a_dur = self.get_audio_duration(audio_path)
-                
-                # 2. Define Narration Window
+
+                # ----------------------------
+                # 2. Visual window
+                # ----------------------------
                 start_time = self._timestamp_to_seconds(step["timestamp"])
-                
-                # Determine when the next segment starts to bound this one
+
                 if idx < len(script) - 1:
-                    end_window = self._timestamp_to_seconds(script[idx+1]["timestamp"])
+                    end_window = self._timestamp_to_seconds(
+                        script[idx + 1]["timestamp"]
+                    )
                 else:
                     end_window = total_v_dur
-                
-                # 3. Extract "Clean" Visuals
-                # We find ranges within [start_time, end_window] that are NOT garbage
+
+                # ----------------------------
+                # 3. Build clean visual ranges
+                # ----------------------------
                 valid_ranges = []
                 last_pos = start_time
-                
-                for g_start, g_end in sorted(garbage_ranges):
-                    if g_end <= start_time: continue # Past garbage
-                    if g_start >= end_window: break   # Future garbage
-                    
-                    # If there's a good part before this garbage starts
+
+                for g_start, g_end in garbage_ranges:
+                    if g_end <= start_time:
+                        continue
+                    if g_start >= end_window:
+                        break
+
                     if g_start > last_pos:
                         valid_ranges.append((last_pos, g_start))
-                    
+
                     last_pos = max(last_pos, g_end)
-                
-                # Add the remaining good part after the last garbage
+
                 if last_pos < end_window:
                     valid_ranges.append((last_pos, end_window))
 
-                # 4. Cut and Stitch Good Sub-clips
+                # ----------------------------
+                # 4. Cut visuals to match audio duration
+                # ----------------------------
                 sub_clips = []
                 current_v_dur = 0.0
-                
+
                 for i, (v_start, v_end) in enumerate(valid_ranges):
-                    # Stop if we already have enough video for the narration
-                    if current_v_dur >= a_dur: break
-                    
-                    # Calculate how much more we need
+                    if current_v_dur >= a_dur:
+                        break
+
                     needed = a_dur - current_v_dur
-                    actual_cut = min(v_end - v_start, needed)
-                    
-                    if actual_cut < 0.05: continue # Skip tiny fragments
-                    
-                    sub_clip_path = tmp / f"s_{idx:03d}_{i:03d}.mp4"
-                    self.cut_segment(raw_video, v_start, actual_cut, sub_clip_path)
-                    sub_clips.append(sub_clip_path)
+                    available = v_end - v_start
+                    actual_cut = min(available, needed)
+
+                    if actual_cut < 0.05:
+                        continue
+
+                    out_clip = tmp / f"s_{idx:03d}_{i:03d}.mp4"
+                    self.cut_segment(
+                        raw_video,
+                        v_start,
+                        actual_cut,
+                        out_clip
+                    )
+
+                    sub_clips.append(out_clip)
                     current_v_dur += actual_cut
 
-                # 5. Join Sub-clips or create fallback
+                # ----------------------------
+                # 5. Build base clip
+                # ----------------------------
                 if not sub_clips:
-                    # Fallback: just a tiny freeze frame if everything was garbage
+                    # fallback tiny frame
                     v_base = tmp / f"base_{idx:03d}.mp4"
                     self.cut_segment(raw_video, start_time, 0.1, v_base)
+
                 elif len(sub_clips) == 1:
                     v_base = sub_clips[0]
+
                 else:
                     v_base = tmp / f"base_{idx:03d}.mp4"
                     self.concat_clips(sub_clips, v_base)
 
-                # 6. Final Polish (Padding and Audio)
-                padded_clip = tmp / f"vpad_{idx:03d}.mp4"
-                self.freeze_to_duration(v_base, a_dur, padded_clip)
-
+                # ----------------------------
+                # 6. Freeze / hold to audio duration
+                # ----------------------------
                 final_clip = tmp / f"final_{idx:03d}.mp4"
-                self.attach_audio(padded_clip, audio_path, final_clip)
+                self.freeze_to_duration(v_base, a_dur, final_clip)
+
                 step_clips.append(final_clip)
 
-            # 7. Final Assembly
+            # ----------------------------
+            # 7. Final concat
+            # ----------------------------
             self.concat_clips(step_clips, output_path)
-            
+
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
-
 
     def get_video_size(self, path):
         out, _ = self.run_cmd([

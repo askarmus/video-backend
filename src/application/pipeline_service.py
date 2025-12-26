@@ -290,8 +290,6 @@ class NarrationPipeline:
         # Upload final products
         if not use_local:
             self.upload_asset(final_video_path, f"processed/{project_id}/{final_video_name}")
-            self.upload_asset(final_audio_path, f"processed/{project_id}/{final_audio_name}")
-            self.upload_asset(script_file, f"processed/{project_id}/ai_voiceover_script.json")
             print(f"  ✅ All assets uploaded to GCS folder: processed/{project_id}/")
 
         # 6. Metadata and Database Update
@@ -313,7 +311,7 @@ class NarrationPipeline:
                 "user_ip": os.getenv("USER_IP", "0.0.0.0"),
                 "user_country": os.getenv("USER_COUNTRY", "unknown"),
                 "processed_video_url": gcs_video_url or final_video_path,
-                "processed_audio_url": gcs_audio_url or final_audio_path,
+                # "processed_audio_url": gcs_audio_url or final_audio_path,
                 "project_id": project_id,
 
                 # ✅ helpful flag for frontend / debugging, does not break anything
