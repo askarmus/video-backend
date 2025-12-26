@@ -8,6 +8,7 @@ from src.application.use_cases.get_video import GetVideoByIdUseCase
 from src.application.use_cases.list_videos import ListVideosUseCase
 from src.application.use_cases.create_video import CreateVideoUseCase
 from src.application.use_cases.update_video_config import UpdateVideoConfigUseCase
+from src.application.use_cases.update_video_title import UpdateVideoTitleUseCase
 from src.infrastructure.repositories.supabase_video_repository import SupabaseVideoRepository
 from src.application.pipeline_service import NarrationPipeline
 from src.infrastructure.google_client import client, creds
@@ -32,6 +33,10 @@ def create_video_use_case():
 def update_config_use_case():
     repo = SupabaseVideoRepository()
     return UpdateVideoConfigUseCase(repo)
+
+def update_title_use_case():
+    repo = SupabaseVideoRepository()
+    return UpdateVideoTitleUseCase(repo)
 
 
 
@@ -182,6 +187,33 @@ async def update_video_settings(
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         print(f"Update Config API Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.patch("/{video_id}/title")
+async def update_video_title(
+    video_id: str,
+    title_data: Dict[str, str] = Body(..., description="The new title for the video"),
+    user=Depends(get_current_user),
+    use_case: UpdateVideoTitleUseCase = Depends(update_title_use_case)
+):
+    """
+    Update the video title.
+    """
+    try:
+        title = title_data.get("title")
+        if not title:
+            raise HTTPException(status_code=400, detail="No title provided")
+            
+        use_case.execute(video_id, user.id, title)
+        return {"status": "success", "title": title}
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        print(f"Update Title API Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
 
