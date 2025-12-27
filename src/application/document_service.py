@@ -97,97 +97,111 @@ class DocumentGenerationService:
         
         documentation_steps = []
         
+        # 1. Load existing images to reuse
+        existing_doc = video.documentation or {}
+        image_library = existing_doc.get("images", {})
+        
         tmp_dir = Path(tempfile.mkdtemp(prefix="doc_gen_"))
+        local_video_path = None
         
-        # 1. Ensure we have a local video file if it's on GCS
-        # FFmpeg often struggles with direct GCS URIs/Public URLs without auth
-        local_video_path = video_url
-        video_is_remote = video_url.startswith("gs://") or video_url.startswith("http")
-        
-        try:
-            if video_is_remote:
-                print(f"📥 Downloading video for frame extraction: {video_url}")
-                # We reuse the logic from storage_service or just download to tmp
-                if video_url.startswith("gs://"):
-                    from src.infrastructure.storage_service import download_file
-                    # Simple parse for gs://bucket/blob
-                    parts = video_url[5:].split("/", 1)
-                    v_bucket = parts[0]
-                    v_blob = parts[1]
-                    local_video_path = str(tmp_dir / "temp_video.mp4")
-                    download_file(v_bucket, v_blob, local_video_path)
-                else:
-                    # It's an HTTP URL - if it's a GCS public URL, we might still need to download it
-                    # for stability with FFmpeg
-                    import requests
-                    local_video_path = str(tmp_dir / "temp_video.mp4")
-                    with requests.get(video_url, stream=True) as r:
-                        r.raise_for_status()
-                        with open(local_video_path, 'wb') as f:
-                            for chunk in r.iter_content(chunk_size=8192):
-                                f.write(chunk)
+        def ensure_video_downloaded():
+            nonlocal local_video_path
+            if local_video_path:
+                return local_video_path
+            
+            video_is_remote = video_url.startswith("gs://") or video_url.startswith("http")
+            if not video_is_remote:
+                local_video_path = video_url
+                return local_video_path
 
+            print(f"📥 Downloading video for frame extraction: {video_url}")
+            local_video_path = str(tmp_dir / "temp_video.mp4")
+            
+            if video_url.startswith("gs://"):
+                from src.infrastructure.storage_service import download_file
+                parts = video_url[5:].split("/", 1)
+                download_file(parts[0], parts[1], local_video_path)
+            else:
+                import requests
+                with requests.get(video_url, stream=True) as r:
+                    r.raise_for_status()
+                    with open(local_video_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
+            return local_video_path
+
+        try:
             print(f"📄 Generating documentation for video {video_id}...")
             
             for i, seg in enumerate(script):
                 if seg.get("is_deleted") or seg.get("isDeleted"):
                     continue
                 
+                seg_id = seg['id']
                 start_time = float(seg.get("narration_start", seg.get("start_time", 0)))
                 duration = float(seg.get("audio_duration", seg.get("duration", 0)))
-                
-                # Capture point: Start + offset
                 capture_offset = min(duration * 0.2, 0.5)
                 capture_time = start_time + capture_offset
-                
-                screenshot_filename = f"step_{i:03d}_{seg['id']}.jpg"
-                local_path = tmp_dir / screenshot_filename
-                
-                print(f"📸 Capturing frame at {capture_time:.2f}s for segment {seg['id']}")
-                try:
-                    self.video_service.extract_frame(local_video_path, capture_time, local_path)
+
+                # Reuse logic
+                if seg_id in image_library:
+                    print(f"♻️ Reusing existing screenshot for segment {seg_id}")
+                    public_url = image_library[seg_id]
+                else:
+                    # Actually capture it
+                    screenshot_filename = f"step_{i:03d}_{seg_id}.jpg"
+                    local_path = tmp_dir / screenshot_filename
                     
-                    if not local_path.exists():
-                        print(f"⚠️ Warning: Frame extraction failed for segment {seg['id']} at {capture_time}s")
+                    try:
+                        v_path = ensure_video_downloaded()
+                        print(f"📸 Capturing frame at {capture_time:.2f}s for segment {seg_id}")
+                        self.video_service.extract_frame(v_path, capture_time, local_path)
+                        
+                        if not local_path.exists():
+                            print(f"⚠️ Warning: Frame extraction failed for segment {seg_id}")
+                            continue
+
+                        # Upload
+                        blob_path = f"processed/{video_id}/docs/{screenshot_filename}"
+                        print(f"☁️ Uploading screenshot to {blob_path}")
+                        public_url = upload_file(bucket_name, str(local_path), blob_path)
+                        
+                        if not public_url:
+                            continue
+
+                        # Add to library
+                        image_library[seg_id] = public_url
+                        
+                    except Exception as e:
+                        print(f"❌ Error capturing segment {seg_id}: {e}")
                         continue
 
-                    # Upload
-                    blob_path = f"processed/{video_id}/docs/{screenshot_filename}"
-                    print(f"☁️ Uploading screenshot to {blob_path}")
-                    public_url = upload_file(bucket_name, str(local_path), blob_path)
-                    
-                    if not public_url:
-                        print(f"⚠️ Warning: Upload failed for {screenshot_filename}")
-                        continue
-
-                    step_data = {
-                        "segment_id": seg["id"],
-                        "order": i + 1,
-                        "timestamp": capture_time,
-                        "screenshot_url": public_url,
-                        "title": seg.get("ui_element", f"Step {i+1}"),
-                        "action": seg.get("user_action", ""),
-                        "voiceover_text": seg.get("voiceover_text", "")
-                    }
-                    documentation_steps.append(step_data)
-                except Exception as e:
-                    print(f"❌ Error processing segment {seg['id']}: {e}")
-                    continue
+                step_data = {
+                    "segment_id": seg_id,
+                    "order": i + 1,
+                    "timestamp": capture_time,
+                    "screenshot_url": public_url,
+                    "title": seg.get("ui_element", f"Step {i+1}"),
+                    "action": seg.get("user_action", ""),
+                    "voiceover_text": seg.get("voiceover_text", "")
+                }
+                documentation_steps.append(step_data)
                 
-            # 2. Generate AI-powered Markdown
+            # 3. Generate AI-powered Markdown
             ai_markdown = self.generate_ai_markdown_guide(video_id, documentation_steps)
             
-            # 3. Save to Video Data
+            # 4. Save to Video Data
             updated_doc = {
                 "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "steps": documentation_steps,
-                "markdown": ai_markdown
+                "markdown": ai_markdown,
+                "images": image_library # Preserve the library
             }
             
             # Update DB
             self.video_repo.update(video_id, existing_video=video, documentation=updated_doc)
             
-            print(f"✅ Documentation generated with {len(documentation_steps)} steps and AI content.")
+            print(f"✅ Documentation generated with {len(documentation_steps)} steps. {len(image_library)} images in library.")
             return updated_doc
 
         finally:
