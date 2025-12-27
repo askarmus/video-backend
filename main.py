@@ -49,9 +49,9 @@ if __name__ == "__main__":
         
         if env == "prod":
             # In prod mode, the pipeline already uploaded everything to the project folder
-            bucket_name = os.getenv("VIDEO_URI").replace("gs://", "").split("/")[0]
-            final_video_url = f"gs://{bucket_name}/processed/{project_id}/{results['video_name']}"
-            final_audio_url = f"gs://{bucket_name}/processed/{project_id}/{results['audio_name']}"
+            # In prod mode, the pipeline already uploaded everything to the project folder
+            final_video_url = results.get("gcs_video_uri", "") 
+            final_audio_url = results.get("gcs_audio_uri", "")
         else:
             print(f"⏩ Local assets preserved in: {results['project_dir']}")
             final_video_url = results["video_path"]

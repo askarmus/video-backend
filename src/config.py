@@ -21,10 +21,17 @@ DEFAULT_BUCKET = "evalsy-storage"
 VIDEO_BUCKET = DEFAULT_BUCKET
 
 # Intelligent Bucket Detection
+# Intelligent Bucket Detection
 raw_uri = os.getenv("VIDEO_URI")
-if raw_uri and raw_uri.startswith("gs://"):
-    # gs://bucket-name/folder/... -> bucket-name
-    VIDEO_BUCKET = raw_uri.replace("gs://", "").split("/")[0]
+if raw_uri:
+    if raw_uri.startswith("gs://"):
+        # gs://bucket-name/folder/... -> bucket-name
+        VIDEO_BUCKET = raw_uri.replace("gs://", "").split("/")[0]
+    elif raw_uri.startswith("https://storage.googleapis.com/"):
+        # https://storage.googleapis.com/bucket-name/folder/... -> bucket-name
+        VIDEO_BUCKET = raw_uri.replace("https://storage.googleapis.com/", "").split("/")[0]
+    else:
+         VIDEO_BUCKET = os.getenv("VIDEO_BUCKET", DEFAULT_BUCKET)
 else:
     VIDEO_BUCKET = os.getenv("VIDEO_BUCKET", DEFAULT_BUCKET)
 

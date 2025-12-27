@@ -17,7 +17,7 @@ def upload_file(bucket_name, source_file_path, destination_blob_name):
         blob.upload_from_filename(source_file_path)
         print(f"✅ File uploaded successfully.")
         
-        return f"gs://{bucket_name}/{destination_blob_name}"
+        return blob.public_url
     except Exception as e:
         print(f"❌ Upload failed: {e}")
         return None
@@ -43,16 +43,3 @@ def download_file(bucket_name, source_blob_name, destination_file_path):
         import traceback
         traceback.print_exc()
         return None
-
-def parse_gcs_uri(uri):
-    """
-    Helper to extract bucket and blob from a gs:// URI
-    """
-    if not uri.startswith("gs://"):
-        return None, None
-    
-    parts = uri.replace("gs://", "").split("/", 1)
-    bucket_name = parts[0]
-    blob_name = parts[1] if len(parts) > 1 else ""
-    
-    return bucket_name, blob_name

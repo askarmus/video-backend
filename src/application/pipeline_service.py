@@ -9,7 +9,7 @@ from src.application.script_service import (
     get_default_project_template
 )
 from src.infrastructure.voice_service import generate_voiceover
-from src.infrastructure.storage_service import download_file, upload_file, parse_gcs_uri
+from src.infrastructure.storage_service import download_file, upload_file
 from src.application.video_service import VideoService
 from src.application.audio_service import AudioService
 from src.application.use_cases.create_video import CreateVideoUseCase
@@ -157,8 +157,23 @@ class NarrationPipeline:
 
     def download_video(self, gcs_uri):
         """Helper to download a video from GCS"""
-        bucket_name, blob_name = parse_gcs_uri(gcs_uri)
-        if not bucket_name:
+        from urllib.parse import urlparse
+
+        bucket_name, blob_name = None, None
+
+        if gcs_uri.startswith("gs://"):
+            # gs://bucket/blob
+            if "/" in gcs_uri[5:]:
+                bucket_name, blob_name = gcs_uri[5:].split("/", 1)
+        elif gcs_uri.startswith("http"):
+            # https://storage.googleapis.com/bucket/blob
+            parsed = urlparse(gcs_uri)
+            if "storage.googleapis.com" in parsed.netloc:
+                path = parsed.path.lstrip("/")
+                if "/" in path:
+                    bucket_name, blob_name = path.split("/", 1)
+
+        if not bucket_name or not blob_name:
             raise ValueError(f"Invalid GCS URI: {gcs_uri}")
 
         base_name = os.path.splitext(blob_name)[0]
@@ -175,7 +190,7 @@ class NarrationPipeline:
 
     def upload_asset(self, local_path, destination_blob):
         """Helper to upload a local file to GCS"""
-        bucket_name = os.getenv("VIDEO_URI").replace("gs://", "").split("/")[0]
+        bucket_name = os.getenv("GCS_BUCKET_NAME", "evalsy-storage")
         return upload_file(bucket_name, local_path, destination_blob)
 
     def run(self, local_raw_path, gcs_video_uri, video_id=None, user_id=None, title=None, video_uri=None, use_case: CreateVideoUseCase = None):
@@ -192,7 +207,7 @@ class NarrationPipeline:
         project_id = f"{base_name}_{timestamp}_{unique_id}"
 
         # Determine GCS bucket
-        bucket_name = os.getenv("VIDEO_URI").replace("gs://", "").split("/")[0] if os.getenv("VIDEO_URI") else None
+        bucket_name = os.getenv("GCS_BUCKET_NAME", "evalsy-storage")
 
         # Create project-specific local directory
         project_dir = os.path.join(self.output_dir, project_id)
@@ -271,8 +286,8 @@ class NarrationPipeline:
         timings["Audio Concat"] = time.time() - audio_concat_start
 
         # 5. Cloud Upload (All assets in project folder)
-        gcs_video_url = f"gs://{bucket_name}/processed/{project_id}/{final_video_name}" if not use_local else None
-        gcs_audio_url = f"gs://{bucket_name}/processed/{project_id}/{final_audio_name}" if not use_local else None
+        gcs_video_url = None
+        gcs_audio_url = None
 
         if not use_local:
             print(f"☁️  [5/5] Syncing all assets to Cloud Storage...")
@@ -298,7 +313,9 @@ class NarrationPipeline:
 
         # Upload final products
         if not use_local:
-            self.upload_asset(final_video_path, f"processed/{project_id}/{final_video_name}")
+            # Capture the public URL returned by upload()
+            gcs_video_url = self.upload_asset(final_video_path, f"processed/{project_id}/{final_video_name}")
+            gcs_audio_url = self.upload_asset(final_audio_path, f"processed/{project_id}/{final_audio_name}")
             print(f"  ✅ All assets uploaded to GCS folder: processed/{project_id}/")
 
         # 6. Metadata and Database Update
@@ -360,6 +377,6 @@ class NarrationPipeline:
             "audio_name": final_audio_name,
             "script": script,
             "audio_files": audio_files,
-            "gcs_video_uri": f"gs://{bucket_name}/processed/{project_id}/{final_video_name}" if not use_local else None,
-            "gcs_audio_uri": f"gs://{bucket_name}/processed/{project_id}/{final_audio_name}" if not use_local else None
+            "gcs_video_uri": gcs_video_url if not use_local else None,
+            "gcs_audio_uri": gcs_audio_url if not use_local else None
         }

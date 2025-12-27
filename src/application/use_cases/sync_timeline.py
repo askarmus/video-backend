@@ -5,7 +5,7 @@ import time
 from src.config import VIDEO_BUCKET
 from src.domain.repositories.video_repository import VideoRepository
 from src.infrastructure.voice_service import generate_voiceover
-from src.infrastructure.storage_service import download_file, upload_file, parse_gcs_uri
+from src.infrastructure.storage_service import download_file, upload_file
 from src.infrastructure.workspace_manager import LocalWorkspace
 from src.application.audio_service import AudioService
 from src.application.video_service import VideoService
@@ -55,7 +55,7 @@ class SyncTimelineUseCase:
                     segment["audio_duration"] = round(new_dur, 3)
                     segment["duration"] = round(new_dur, 3) 
                     
-                    # Upload newly generated segment to GCS
+                    # Upload newly generated segment to GCS (returns public URL)
                     blob = f"processed/{project_id}/voiceovers/{os.path.basename(local_path)}"
                     seg_url = upload_file(bucket_name, local_path, blob)
                     segment["audio_url"] = seg_url
