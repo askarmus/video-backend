@@ -11,6 +11,7 @@ class Video:
     language: str = "en"
     status: str = "processing"
     thumbnail_url: Optional[str] = None
+    documentation: dict[str, Any] = field(default_factory=dict)
     is_deleted: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

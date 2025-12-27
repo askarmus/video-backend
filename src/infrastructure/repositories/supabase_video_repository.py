@@ -16,10 +16,17 @@ class SupabaseVideoRepository(VideoRepository):
             
             video_data = data.get("video_data", {})
             if isinstance(video_data, str):
-                try:
-                    video_data = json.loads(video_data)
-                except:
-                    video_data = {}
+                try: video_data = json.loads(video_data)
+                except: video_data = {}
+
+            documentation = data.get("documentation") or {}
+
+            if isinstance(video_data, dict) and "documentation" in video_data:
+                del video_data["documentation"]
+
+            if isinstance(documentation, str):
+                try: documentation = json.loads(documentation)
+                except: documentation = {}
 
             return Video(
                 id=data["id"],
@@ -29,6 +36,7 @@ class SupabaseVideoRepository(VideoRepository):
                 language=data.get("language", "en"),
                 status=data.get("status", "processing"),
                 thumbnail_url=data.get("thumbnail_url"),
+                documentation=documentation,
                 is_deleted=data.get("is_deleted", False),
                 created_at=data.get("created_at"),
                 updated_at=data.get("updated_at")
@@ -53,12 +61,18 @@ class SupabaseVideoRepository(VideoRepository):
             videos = []
             for item in res.data or []:
                 video_data = item.get("video_data") or {}
-
                 if isinstance(video_data, str):
-                    try:
-                        video_data = json.loads(video_data)
-                    except:
-                        video_data = {}
+                    try: video_data = json.loads(video_data)
+                    except: video_data = {}
+
+                documentation = item.get("documentation") or {}
+
+                if isinstance(video_data, dict) and "documentation" in video_data:
+                    del video_data["documentation"]
+
+                if isinstance(documentation, str):
+                    try: documentation = json.loads(documentation)
+                    except: documentation = {}
 
                 videos.append(Video(
                     id=item["id"],
@@ -68,6 +82,7 @@ class SupabaseVideoRepository(VideoRepository):
                     language=item.get("language", "en"),
                     status=item.get("status", "processing"),
                     thumbnail_url=item.get("thumbnail_url"),
+                    documentation=documentation,
                     is_deleted=item.get("is_deleted", False),
                     created_at=item.get("created_at"),
                     updated_at=item.get("updated_at")
@@ -81,14 +96,20 @@ class SupabaseVideoRepository(VideoRepository):
 
     def save(self, video: Video) -> Video:
         try:
+            # Ensure documentation is not nested in video_data during save
+            v_data = {**video.video_data}
+            if "documentation" in v_data:
+                del v_data["documentation"]
+
             data = {
                 "id": video.id,
                 "created_by": video.created_by,
-                "video_data": video.video_data,
+                "video_data": v_data,
                 "title": video.title,
                 "language": video.language,
                 "status": video.status,
                 "thumbnail_url": video.thumbnail_url,
+                "documentation": video.documentation,
                 "is_deleted": video.is_deleted,
                 "updated_at": video.updated_at.isoformat() if isinstance(video.updated_at, datetime) else video.updated_at
             }
@@ -115,9 +136,20 @@ class SupabaseVideoRepository(VideoRepository):
             # If updating video_data, perform a top-level merge
             if "video_data" in kwargs:
                 video = existing_video or self.get_by_id(video_id)
-                if video and video.video_data:
-                    merged_data = {**video.video_data, **kwargs.get("video_data", {})}
+                if video:
+                    current_v_data = video.video_data or {}
+                    merged_data = {**current_v_data, **kwargs.get("video_data", {})}
+                    # Remove documentation from video_data as it now has its own top-level column
+                    if "documentation" in merged_data:
+                        del merged_data["documentation"]
                     payload["video_data"] = merged_data
+
+            # If updating documentation, perform a top-level merge
+            if "documentation" in kwargs:
+                video = existing_video or self.get_by_id(video_id)
+                if video and video.documentation:
+                    merged_doc = {**video.documentation, **kwargs.get("documentation", {})}
+                    payload["documentation"] = merged_doc
 
             payload["updated_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -138,6 +170,15 @@ class SupabaseVideoRepository(VideoRepository):
             if isinstance(v_data, str): 
                 try: v_data = json.loads(v_data)
                 except: v_data = {}
+                
+            doc_data = item.get("documentation") or {}
+            
+            if isinstance(v_data, dict) and "documentation" in v_data:
+                del v_data["documentation"]
+
+            if isinstance(doc_data, str):
+                try: doc_data = json.loads(doc_data)
+                except: doc_data = {}
 
             return Video(
                 id=item["id"],
@@ -147,6 +188,7 @@ class SupabaseVideoRepository(VideoRepository):
                 language=item.get("language", "en"),
                 status=item.get("status", "processing"),
                 thumbnail_url=item.get("thumbnail_url"),
+                documentation=doc_data,
                 is_deleted=item.get("is_deleted", False)
             )
 

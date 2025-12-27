@@ -1,5 +1,7 @@
 import os
 import json
+import uuid
+
 from google.cloud import texttospeech
 
 def generate_voiceover(script_data, credentials, output_dir="voiceovers"):
@@ -24,7 +26,6 @@ def generate_voiceover(script_data, credentials, output_dir="voiceovers"):
         pitch=2.0
     )
     
-    import uuid
 
     audio_files = []
     

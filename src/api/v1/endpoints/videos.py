@@ -9,6 +9,7 @@ from src.application.use_cases.list_videos import ListVideosUseCase
 from src.application.use_cases.create_video import CreateVideoUseCase
 from src.application.use_cases.update_video_config import UpdateVideoConfigUseCase
 from src.application.use_cases.update_video_title import UpdateVideoTitleUseCase
+from src.application.use_cases.update_video_guide import UpdateVideoGuideUseCase
 from src.infrastructure.repositories.supabase_video_repository import SupabaseVideoRepository
 from src.application.pipeline_service import NarrationPipeline
 from src.application.document_service import DocumentGenerationService
@@ -38,6 +39,10 @@ def update_config_use_case():
 def update_title_use_case():
     repo = SupabaseVideoRepository()
     return UpdateVideoTitleUseCase(repo)
+
+def update_guide_use_case():
+    repo = SupabaseVideoRepository()
+    return UpdateVideoGuideUseCase(repo)
 
 
 
@@ -236,7 +241,7 @@ async def generate_document(
         if video.created_by != user.id:
             raise HTTPException(status_code=403, detail="Unauthorized")
 
-        service = DocumentGenerationService(repo)
+        service = DocumentGenerationService(repo, client)
         doc_data = service.generate_guide(video_id)
         
         return {
@@ -249,5 +254,31 @@ async def generate_document(
         print(f"Generate Document Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.patch("/{video_id}/guide")
+async def update_video_guide(
+    video_id: str,
+    guide_data: Dict[str, Any] = Body(..., description="The partial documentation/guide data to update"),
+    user=Depends(get_current_user),
+    use_case: UpdateVideoGuideUseCase = Depends(update_guide_use_case)
+):
+    """
+    Update the video guide/documentation (markdown, steps).
+    """
+    try:
+        if not guide_data:
+            raise HTTPException(status_code=400, detail="No guide data provided")
+            
+        result = use_case.execute(video_id, user.id, guide_data)
+        return {"status": "success", "data": result}
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        print(f"Update Guide API Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 

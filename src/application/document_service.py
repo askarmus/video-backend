@@ -1,15 +1,85 @@
 import os
 import shutil
 import tempfile
+import datetime
 from pathlib import Path
+from typing import Any
 from src.application.video_service import VideoService
 from src.infrastructure.storage_service import upload_file
 from src.domain.repositories.video_repository import VideoRepository
 
+from google.genai import types
+import json
+
 class DocumentGenerationService:
-    def __init__(self, video_repo: VideoRepository):
+    def __init__(self, video_repo: VideoRepository, gemini_client: Any = None):
         self.video_repo = video_repo
         self.video_service = VideoService()
+        self.client = gemini_client
+
+    def generate_ai_markdown_guide(self, video_id: str, steps: list[dict]):
+        """
+        Uses Gemini to generate a polished Markdown document from the captured steps.
+        """
+        if not self.client:
+            print("⚠️ No AI client available. Skipping AI refinement.")
+            return ""
+
+        video = self.video_repo.get_by_id(video_id)
+        title = video.title or "Tutorial Guide"
+        
+        # Prepare context for AI
+        steps_context = []
+        for s in steps:
+            steps_context.append({
+                "order": s["order"],
+                "title": s["title"],
+                "action": s["action"],
+                "voiceover_text": s["voiceover_text"],
+                "screenshot_url": s["screenshot_url"]
+            })
+
+        prompt = f"""
+        **TASK:** Create a professional, polished step-by-step user guide in Markdown format.
+        **PRODUCT:** {title}
+
+        **STYLE GUIDELINES:**
+        1. **TITLE:** Use a single # Heading 1 for the main title.
+        2. **INTRODUCTION:** Immediately after the title, write a 2-sentence professional introduction explaining what this guide covers and its value. Wrap this introduction in a Markdown blockquote (e.g., '> Discover how to...').
+        3. **STEPS:** For each step:
+           - Use ## Step X: [Action Name] as the header.
+           - Write a clear, instructional paragraph (2-3 sentences) describing the action. Do not just copy the voiceover; make it read like a manual.
+           - Place the image immediately after the text using: ![Screenshot](URL)
+        4. **TONE:** Professional, instructional, and concise.
+
+        **DATA (JSON format):**
+        {json.dumps(steps_context, indent=2)}
+
+        **OUTPUT:** Return ONLY the Markdown content.
+        """
+
+        try:
+            print(f"🪄 AI Refinement: Generating perfect guideline for {video_id}...")
+            response = self.client.models.generate_content(
+                model="gemini-2.0-flash-001",
+                contents=[prompt],
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                )
+            )
+            
+            markdown = response.text.strip()
+            # Basic cleanup if AI adds ```markdown code blocks
+            if markdown.startswith("```markdown"):
+                markdown = markdown.replace("```markdown", "", 1).rstrip("```")
+            elif markdown.startswith("```"):
+                markdown = markdown.replace("```", "", 1).rstrip("```")
+            
+            return markdown.strip()
+
+        except Exception as e:
+            print(f"❌ AI Guide Generation Error: {e}")
+            return ""
 
     def generate_guide(self, video_id: str):
         video = self.video_repo.get_by_id(video_id)
@@ -22,15 +92,6 @@ class DocumentGenerationService:
 
         script = video.video_data.get("script", [])
         bucket_name = video.video_data.get("bucket", "default-bucket") # Need to resolve bucket name from somewhere if not in video_data
-        
-        # Fallback bucket extraction if URL is GCS public link
-        if "storage.googleapis.com" in video_url:
-            # https://storage.googleapis.com/BUCKET_NAME/path...
-            try:
-                parts = video_url.replace("https://storage.googleapis.com/", "").split("/", 1)
-                bucket_name = parts[0]
-            except:
-                pass
         
         documentation_steps = []
         
@@ -74,16 +135,20 @@ class DocumentGenerationService:
                 }
                 documentation_steps.append(step_data)
                 
-            # Save to Video Data
+            # 2. Generate AI-powered Markdown
+            ai_markdown = self.generate_ai_markdown_guide(video_id, documentation_steps)
+            
+            # 3. Save to Video Data
             updated_doc = {
-                "generated_at": str(os.times()), # Simple timestamp or use datetime
-                "steps": documentation_steps
+                "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "steps": documentation_steps,
+                "markdown": ai_markdown
             }
             
             # Update DB
-            self.video_repo.update(video_id, existing_video=video, video_data={"documentation": updated_doc})
+            self.video_repo.update(video_id, existing_video=video, documentation=updated_doc)
             
-            print(f"✅ Documentation generated with {len(documentation_steps)} steps.")
+            print(f"✅ Documentation generated with {len(documentation_steps)} steps and AI content.")
             return updated_doc
 
         finally:
