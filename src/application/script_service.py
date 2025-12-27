@@ -38,81 +38,106 @@ def get_default_project_template() -> Dict[str, Any]:
         }
     }
 
-def analyze_video_full_pipeline(client, video_uri: str):
+ 
+
+def analyze_video_full_pipeline(client, video_uri: str, mode: str = "MARKETING"):
     """
-    Analyzes video to generate a clean script AND identify segments to remove 
-    (dead air, static frames, noise), specifically handling running clocks.
+    Enhanced analysis that aligns narration with UI labels but groups them into 
+    cohesive 'Trupeer-style' segments (Macro-Segmentation).
     """
-    print("🎬 Analyzing video for Clean Segments & Professional Script...")
+    print(f"🎬 [Gemini] Analyzing video with Trupeer-style aggregation in '{mode}' mode...")
+
+    style_guardrails = """
+        **CRITICAL STYLE RULES:**
+        1. **NO STUTTERING:** Never write repeated words like "the the the" or "um". 
+        2. **PERFECT GRAMMAR:** Sentences must be grammatically correct standard English.
+        * *Wrong:* "Once it is uploaded the file..."
+        * *Right:* "Once the file is uploaded..."
+        * *Wrong:* "Why doesn't guy doesn't match..."
+        * *Right:* "Why the candidate does not match..."
+        3. **PROFESSIONAL FLOW:** Speak like a polished narrator, not an improv speaker.
+        4. **PROFESSIONAL TERMINOLOGY:** * REPLACE casual words like "guy", "dude", or "fella" with "Candidate" or "User".
+        """
     
-    prompt = """
-    You are an expert AI Video Editor and Product Marketer.
-    I have a raw recording of a software demo. It contains valuable UI actions mixed with "garbage" content.
+    # --- 1. PERSONA CONFIGURATION (Kept exactly as you had it) ---
+    if mode.upper() == "ONBOARDING":
+        persona_instruction = """
+        **ROLE:** Technical Trainer.
+        **GOAL:** Teach a user strictly *how* to perform a task.
+        **TONE:** Patient, Clear, Instructional.
+        **KEY INSTRUCTION:** Guide the user through the workflow smoothly.
+        """
+    elif mode.upper() == "SALES":
+        persona_instruction = """
+        **ROLE:** Senior Sales Engineer.
+        **GOAL:** Persuade a buyer by highlighting the *solution*.
+        **TONE:** Professional, Confident, Value-Driven.
+        **KEY INSTRUCTION:** Focus on the "Why" behind the features.
+        """
+    else: # Marketing / Default
+        persona_instruction = """
+        **ROLE:** Product Marketing Expert.
+        **GOAL:** Generate excitement.
+        **TONE:** High-Energy, Punchy.
+        **KEY INSTRUCTION:** Focus on outcomes and speed.
+        """
 
-    Your Goal: Return a JSON object containing two lists: 
-    1. 'cleanup_segments' (parts to delete)
-    2. 'script_timeline' (polished narration for the good parts)
-
-    ---
-    ### PART 1: IDENTIFY GARBAGE (The Cleanup)
-    Identify segments that ruin the viewer experience. These will be cut.
+    # --- 2. THE UPDATED PROMPT (Modified for Trupeer-style flow) ---
+    prompt = f"""
+    {style_guardrails}
+    {persona_instruction}
     
-    **CRITICAL RULE FOR "DEAD FRAMES":** Your video contains a running CLOCK/TIMER (e.g., 01:10:42). **Ignore the clock numbers changing.** If the user is not clicking, typing, or moving the mouse significantly to interact with a UI element, it is a DEAD FRAME, even if the timer is running.
-
-    Mark segments for removal if:
-    1. **No User Interaction:** The user is waiting/idle (even if a clock/loader is moving).
-    2. **Background Noise:** Distracting audio (loudspeakers, static) where the narrator is silent.
-    3. **Mistakes:** User corrects themselves or clicks the wrong thing.
-
-    Structure for 'cleanup_segments':
-    {
-        "start_time": "MM:SS",
-        "end_time": "MM:SS",
-        "reason": "no_interaction" | "background_noise" | "mistake",
-        "description": "Brief reason (e.g., 'User waiting, clock ticking only')"
-    }
-
-    ---
-    ### PART 2: THE NARRATION (The Script)
-    Focus ONLY on the moments where the user performs a meaningful UI action (excluding the cleanup segments).
+    **CORE OBJECTIVE: MACRO-SEGMENTATION (TRUPEER STYLE)**
+    You are creating a video voiceover. The current problem is that scripts are too "choppy" (e.g., narrating every single click).
     
-    **Narration Rules (STRICTLY FOLLOW):**
-    1. Speak as a guide, not as a user thinking aloud.
-    2. Each line must explain what is happening AND why it matters.
-    3. Use concise, polished language suitable for a website demo.
-    4. Avoid vague phrases. No filler words (okay, so, you know, then).
-    5. Maintain a smooth, logical flow. Do not repeat ideas.
-    6. Assume the viewer has never seen this product before.
+    **YOUR NEW RULE: AGGREGATE ACTIONS.**
+    Instead of describing every UI interaction individually, group them into logical "Chapters."
+    
+    **1. SEGMENTATION STRATEGY:**
+    * **BAD (Micro):** "Click Settings. [Pause]. Click Profile. [Pause]. Click Edit."
+    * **GOOD (Macro):** "To update your details, simply navigate to the Profile section in Settings."
+    * **TIMING TARGET:** specific segments should aim for **10-20 seconds** of narration, covering multiple visual clicks.
 
-    **Coverage Requirements:**
-    - Cover the full workflow from start to finish.
-    - If the system updates or loads (and it's not being cut), narrate it briefly.
-    - Create 8-12 narration points that fully describe the workflow.
+    **2. TEXT ALIGNMENT STRATEGY:**
+    * Even though you are grouping actions, you must still reference the **Primary UI Text** that anchors the section.
+    * If the user clicks "Save", "Confirm", and "Exit", just reference the main action: "Save your changes."
 
-    Structure for 'script_timeline':
-    {
-        "timestamp": "MM:SS",
-        "ui_element": "Specific UI element",
-        "user_action": "Clear description of action",
-        "voiceover_text": "Polished, professional narration",
-        "pause_duration": 0.6
-    }
-
-    **Timestamp & Duration Rules (CRITICAL):**
-    1. **Valid Ranges Only:** Every `timestamp` in `script_timeline` MUST fall within a "kept" segment (not in `cleanup_segments`). 
-    2. **Avoid "Garbage" Zones:** If an action you want to narrate falls inside a removed segment, snap the `timestamp` to the beginning of the NEXT valid kept range.
-    3. **Continuous Flow:** Ensure the `script_timeline` covers the entire duration of the kept segments without significant gaps.
-    4. **Last Frame Safety:** If your narrations exceed the available video duration, the system will automatically freeze the last frame to cover the audio.
-
-    ---
-    ### FINAL OUTPUT
-    Return strictly JSON with this structure:
-    {
-      "cleanup_segments": [ ... ],
-      "script_timeline": [ ... ]
-    }
+    **OUTPUT STRUCTURE (STRICT JSON):**
+    {{
+      "cleanup_segments": [
+        {{ 
+            "start_time": "MM:SS", 
+            "end_time": "MM:SS", 
+            "reason": "long_pause|mistake|loading", 
+            "description": "Brief reason"
+        }}
+      ],
+      "script_timeline": [
+        {{
+            "timestamp": "MM:SS",
+            "ui_element": "Description of the MAIN UI component for this block",
+            "detected_text_categories": {{
+                "interactive": ["Key_Button_Names_Only"],
+                "informational": ["Section_Headers_Only"],
+                "navigation": ["Menu_Items"],
+                "headers": ["Page_Titles"],
+                "messages": ["Status_Alerts"],
+                "data": ["Key_Values"]
+            }},
+            "primary_text_reference": "The ONE most important text label visible in this sequence",
+            "user_action": "The high-level goal achieved in this sequence",
+            "voiceover_text": "A cohesive, 2-3 sentence paragraph narrating this entire sequence. Focus on value.",
+            "text_match_score": 0.0, 
+            "pause_duration": 0.5
+        }}
+      ]
+    }}
+    
+    **QUALITY CHECK:**
+    * If your `voiceover_text` is shorter than 10 words, you are segmenting too aggressively. MERGE it with the next action.
+    * Ensure `timestamp` represents the start of the *sequence*, not just a random click.
     """
-    
+
     try:
         response = client.models.generate_content(
             model="gemini-2.0-flash-001",
@@ -122,19 +147,15 @@ def analyze_video_full_pipeline(client, video_uri: str):
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                temperature=0.1, # Keep strict for analysis
-                max_output_tokens=8192
+                temperature=0.3, # Slightly higher for more natural sentence flow
             )
         )
-        
         return json.loads(response.text)
         
     except Exception as e:
-        print(f"Error: {e}")
-        return {"cleanup_segments": [], "script_timeline": []}
+        print(f"❌ Error: {e}")
+        return {"script_timeline": [], "cleanup_segments": []}
 
- 
- 
 def load_script(file_path: str):
     """
     Read script data from a local JSON file
