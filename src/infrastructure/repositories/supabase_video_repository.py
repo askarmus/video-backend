@@ -38,6 +38,7 @@ class SupabaseVideoRepository(VideoRepository):
                 thumbnail_url=data.get("thumbnail_url"),
                 documentation=documentation,
                 is_deleted=data.get("is_deleted", False),
+                download_ready=data.get("download_ready", False),
                 created_at=data.get("created_at"),
                 updated_at=data.get("updated_at")
             )
@@ -84,6 +85,7 @@ class SupabaseVideoRepository(VideoRepository):
                     thumbnail_url=item.get("thumbnail_url"),
                     documentation=documentation,
                     is_deleted=item.get("is_deleted", False),
+                    download_ready=item.get("download_ready", False),
                     created_at=item.get("created_at"),
                     updated_at=item.get("updated_at")
                 ))
@@ -111,6 +113,7 @@ class SupabaseVideoRepository(VideoRepository):
                 "thumbnail_url": video.thumbnail_url,
                 "documentation": video.documentation,
                 "is_deleted": video.is_deleted,
+                "download_ready": video.download_ready,
                 "updated_at": video.updated_at.isoformat() if isinstance(video.updated_at, datetime) else video.updated_at
             }
             
@@ -189,7 +192,8 @@ class SupabaseVideoRepository(VideoRepository):
                 status=item.get("status", "processing"),
                 thumbnail_url=item.get("thumbnail_url"),
                 documentation=doc_data,
-                is_deleted=item.get("is_deleted", False)
+                is_deleted=item.get("is_deleted", False),
+                download_ready=item.get("download_ready", False)
             )
 
         except Exception as e:

@@ -17,6 +17,6 @@ class UpdateVideoTitleUseCase:
             raise PermissionError("Unauthorized access to this video")
 
         # 2. Update via Repository
-        updated_video = self.video_repo.update(video_id, existing_video=video, title=title)
+        updated_video = self.video_repo.update(video_id, existing_video=video, title=title, download_ready=False)
         
         return updated_video

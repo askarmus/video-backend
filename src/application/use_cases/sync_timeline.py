@@ -88,7 +88,7 @@ class SyncTimelineUseCase:
                 "duration": total_duration
             }
             # Perform a deep merge update for video_data
-            self.video_repo.update(video_id, video_data=updated_data)
+            self.video_repo.update(video_id, video_data=updated_data, download_ready=False)
             
             return {
                 "status": "success",

@@ -13,5 +13,6 @@ class Video:
     thumbnail_url: Optional[str] = None
     documentation: dict[str, Any] = field(default_factory=dict)
     is_deleted: bool = False
+    download_ready: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

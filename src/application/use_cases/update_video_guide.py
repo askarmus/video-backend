@@ -31,7 +31,8 @@ class UpdateVideoGuideUseCase:
         use_case_result = self.video_repo.update(
             video_id, 
             existing_video=video, 
-            documentation=updated_doc
+            documentation=updated_doc,
+            download_ready=False
         )
         
         return use_case_result.documentation if use_case_result else None

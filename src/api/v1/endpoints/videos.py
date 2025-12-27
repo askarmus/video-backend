@@ -15,7 +15,10 @@ from src.application.pipeline_service import NarrationPipeline
 from src.application.document_service import DocumentGenerationService
 from src.infrastructure.google_client import client, creds
 from src.api.v1.schemas.video import UploadCompleteRequest
+from src.domain.entities.video_export import VideoExportStatus, VideoExportJob
+from src.infrastructure.repositories.supabase_video_export_repository import SupabaseVideoExportRepository
 from src.config import PROJECT_ROOT
+import asyncio
 
 router = APIRouter(prefix="/videos", tags=["Videos"])
 
@@ -43,6 +46,9 @@ def update_title_use_case():
 def update_guide_use_case():
     repo = SupabaseVideoRepository()
     return UpdateVideoGuideUseCase(repo)
+
+def get_export_repo():
+    return SupabaseVideoExportRepository()
 
 
 
@@ -91,6 +97,55 @@ def run_pipeline_background(video_id: str, video_uri: str, user_id: str, title: 
             repo.update(video_id, status="failed")
         except:
             pass
+
+async def simulate_export_process(job_id: str, video_id: str, repo: SupabaseVideoExportRepository):
+    """
+    Simulates a video export process by updating status and progress over time.
+    """
+    try:
+        # 0. Initial State
+        video_repo = SupabaseVideoRepository()
+        video_repo.update(video_id, download_ready=False)
+
+        # 1. Processing Stage
+        await asyncio.sleep(2)
+        repo.update(job_id, status=VideoExportStatus.PROCESSING, progress_percent=10, stage="Analyzing sequence...")
+        
+        await asyncio.sleep(3)
+        repo.update(job_id, progress_percent=35, stage="Rendering frames...")
+        
+        await asyncio.sleep(4)
+        repo.update(job_id, progress_percent=65, stage="Encoding video...")
+
+        # 2. Uploading Stage
+        await asyncio.sleep(2)
+        repo.update(job_id, status=VideoExportStatus.UPLOADING, progress_percent=80, stage="Uploading to cloud storage...")
+
+        # 3. Finalizing Stage
+        await asyncio.sleep(2)
+        repo.update(job_id, status=VideoExportStatus.FINALIZING, progress_percent=95, stage="Optimizing for web playback...")
+
+        # 4. Completed
+        await asyncio.sleep(1)
+        # Simulation output URL
+        output_url = "https://storage.googleapis.com/evalsy-storage/2025-12-23%2010-18-18.mp4"
+        repo.update(job_id, status=VideoExportStatus.COMPLETED, progress_percent=100, stage="Export complete", output_url=output_url)
+        
+        # Update main video record
+        video_repo = SupabaseVideoRepository()
+        v_ent = video_repo.get_by_id(video_id)
+        if v_ent:
+            v_data = v_ent.video_data or {}
+            v_data["last_export_url"] = output_url
+            video_repo.update(video_id, download_ready=True, video_data=v_data)
+        else:
+            video_repo.update(video_id, download_ready=True)
+
+        print(f"🎬 Simulated Export Job {job_id} COMPLETED for video {video_id}.")
+
+    except Exception as e:
+        print(f"❌ Export Simulation Error: {e}")
+        repo.update(job_id, status=VideoExportStatus.FAILED, error_message=str(e))
 
 @router.get("/")
 async def list_videos(
@@ -280,5 +335,75 @@ async def update_video_guide(
         print(f"Update Guide API Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.post("/{video_id}/export")
+async def start_export(
+    video_id: str,
+    background_tasks: BackgroundTasks,
+    user=Depends(get_current_user),
+    repo: SupabaseVideoExportRepository = Depends(get_export_repo)
+):
+    """
+    Starts a simulated video export job.
+    """
+    try:
+        # 1. Verify video exists and is owned by user
+        video_repo = SupabaseVideoRepository()
+        video = video_repo.get_by_id(video_id)
+        if not video:
+            raise HTTPException(status_code=404, detail="Video not found")
+        if video.created_by != user.id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
+        # 2. Create the job record
+        job = VideoExportJob(
+            id="", # Let DB or Repo handle it
+            video_id=video_id,
+            user_id=user.id,
+            status=VideoExportStatus.QUEUED,
+            progress_percent=0,
+            stage="Queuing job..."
+        )
+        created_job = repo.create(job)
+        
+        # Reset download_ready immediately for the UI
+        video_repo.update(video_id, download_ready=False)
+
+        # 3. Trigger simulation in background
+        background_tasks.add_task(simulate_export_process, created_job.id, video_id, repo)
+
+        return {
+            "status": "success",
+            "message": "Export job started",
+            "job": created_job
+        }
+
+    except HTTPException: raise
+    except Exception as e:
+        print(f"Export Start Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/{video_id}/export/status")
+async def get_export_status(
+    video_id: str,
+    user=Depends(get_current_user),
+    repo: SupabaseVideoExportRepository = Depends(get_export_repo)
+):
+    """
+    Gets the latest export job for a video.
+    """
+    try:
+        jobs = repo.get_by_video_id(video_id)
+        if not jobs:
+            return {"status": "none", "job": None}
+            
+        return {
+            "status": "success",
+            "job": jobs[0] # Return the most recent one
+        }
+    except Exception as e:
+        print(f"Export Status Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 

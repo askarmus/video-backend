@@ -19,6 +19,6 @@ class UpdateVideoConfigUseCase:
             raise PermissionError("Unauthorized access to this video configuration")
 
         # 2. Update via Repository (passing the existing video to save a DB fetch)
-        use_case_result = self.video_repo.update(video_id, existing_video=video, video_data=config_patch)
+        use_case_result = self.video_repo.update(video_id, existing_video=video, video_data=config_patch, download_ready=False)
         
         return use_case_result.video_data if use_case_result else None
