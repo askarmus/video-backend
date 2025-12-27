@@ -44,18 +44,20 @@ class DocumentGenerationService:
         **PRODUCT:** {title}
 
         **STYLE GUIDELINES:**
-        1. **TITLE:** Use a single # Heading 1 for the main title.
-        2. **INTRODUCTION:** Immediately after the title, write a 2-sentence professional introduction explaining what this guide covers and its value. Wrap this introduction in a Markdown blockquote (e.g., '> Discover how to...').
-        3. **STEPS:** For each step:
-           - Use ## Step X: [Action Name] as the header.
-           - Write a clear, instructional paragraph (2-3 sentences) describing the action. Do not just copy the voiceover; make it read like a manual.
-           - Place the image immediately after the text using: ![Screenshot](URL)
-        4. **TONE:** Professional, instructional, and concise.
+        1. **SPACING:** Use TWO full newlines (Double Enter) between every single element (Title, Intro, Steps, Headers, Paragraphs, Images). This is critical for readability.
+        2. **TITLE:** Start with exactly one `# Heading 1`.
+        3. **INTRODUCTION:** Immediately after the title, write a 2-sentence professional introduction in a blockquote (`> Discover how to...`).
+        4. **STEPS:** For each step:
+           - Use `## Step X: [Action Name]` as the header.
+           - Use 2-3 sentences of clear instructional text.
+           - Place the image on its own line: `![Screenshot](URL)`
+        5. **STRUCTURE:** Each step MUST be separated from the previous one by multiple newlines.
+        6. **TONE:** Professional and instructional.
 
         **DATA (JSON format):**
         {json.dumps(steps_context, indent=2)}
 
-        **OUTPUT:** Return ONLY the Markdown content.
+        **OUTPUT:** Return ONLY the Markdown content. Do not include ```markdown code block wrappers.
         """
 
         try:
@@ -91,25 +93,50 @@ class DocumentGenerationService:
             raise ValueError("Video has not been processed yet (no video_url)")
 
         script = video.video_data.get("script", [])
-        bucket_name = video.video_data.get("bucket", "default-bucket") # Need to resolve bucket name from somewhere if not in video_data
+        bucket_name = os.getenv("GCS_BUCKET_NAME", "evalsy-storage")
         
         documentation_steps = []
         
         tmp_dir = Path(tempfile.mkdtemp(prefix="doc_gen_"))
         
+        # 1. Ensure we have a local video file if it's on GCS
+        # FFmpeg often struggles with direct GCS URIs/Public URLs without auth
+        local_video_path = video_url
+        video_is_remote = video_url.startswith("gs://") or video_url.startswith("http")
+        
         try:
+            if video_is_remote:
+                print(f"📥 Downloading video for frame extraction: {video_url}")
+                # We reuse the logic from storage_service or just download to tmp
+                if video_url.startswith("gs://"):
+                    from src.infrastructure.storage_service import download_file
+                    # Simple parse for gs://bucket/blob
+                    parts = video_url[5:].split("/", 1)
+                    v_bucket = parts[0]
+                    v_blob = parts[1]
+                    local_video_path = str(tmp_dir / "temp_video.mp4")
+                    download_file(v_bucket, v_blob, local_video_path)
+                else:
+                    # It's an HTTP URL - if it's a GCS public URL, we might still need to download it
+                    # for stability with FFmpeg
+                    import requests
+                    local_video_path = str(tmp_dir / "temp_video.mp4")
+                    with requests.get(video_url, stream=True) as r:
+                        r.raise_for_status()
+                        with open(local_video_path, 'wb') as f:
+                            for chunk in r.iter_content(chunk_size=8192):
+                                f.write(chunk)
+
             print(f"📄 Generating documentation for video {video_id}...")
             
             for i, seg in enumerate(script):
-                # We skip deleted segments usually, but script SHOULD have is_deleted handled
                 if seg.get("is_deleted") or seg.get("isDeleted"):
                     continue
                 
-                start_time = float(seg.get("start_time", 0))
-                duration = float(seg.get("duration", 0))
+                start_time = float(seg.get("narration_start", seg.get("start_time", 0)))
+                duration = float(seg.get("audio_duration", seg.get("duration", 0)))
                 
-                # Capture point: Start + 20% of duration, or +0.5s, clamped to duration
-                # avoiding the very first frame of a transition if possible
+                # Capture point: Start + offset
                 capture_offset = min(duration * 0.2, 0.5)
                 capture_time = start_time + capture_offset
                 
@@ -117,23 +144,35 @@ class DocumentGenerationService:
                 local_path = tmp_dir / screenshot_filename
                 
                 print(f"📸 Capturing frame at {capture_time:.2f}s for segment {seg['id']}")
-                self.video_service.extract_frame(video_url, capture_time, local_path)
-                
-                # Upload
-                blob_path = f"processed/{video_id}/docs/{screenshot_filename}"
-                print(f"☁️ Uploading screenshot to {blob_path}")
-                public_url = upload_file(bucket_name, str(local_path), blob_path)
-                
-                step_data = {
-                    "segment_id": seg["id"],
-                    "order": i + 1,
-                    "timestamp": capture_time,
-                    "screenshot_url": public_url,
-                    "title": seg.get("ui_element", f"Step {i+1}"),
-                    "action": seg.get("user_action", ""),
-                    "voiceover_text": seg.get("voiceover_text", "")
-                }
-                documentation_steps.append(step_data)
+                try:
+                    self.video_service.extract_frame(local_video_path, capture_time, local_path)
+                    
+                    if not local_path.exists():
+                        print(f"⚠️ Warning: Frame extraction failed for segment {seg['id']} at {capture_time}s")
+                        continue
+
+                    # Upload
+                    blob_path = f"processed/{video_id}/docs/{screenshot_filename}"
+                    print(f"☁️ Uploading screenshot to {blob_path}")
+                    public_url = upload_file(bucket_name, str(local_path), blob_path)
+                    
+                    if not public_url:
+                        print(f"⚠️ Warning: Upload failed for {screenshot_filename}")
+                        continue
+
+                    step_data = {
+                        "segment_id": seg["id"],
+                        "order": i + 1,
+                        "timestamp": capture_time,
+                        "screenshot_url": public_url,
+                        "title": seg.get("ui_element", f"Step {i+1}"),
+                        "action": seg.get("user_action", ""),
+                        "voiceover_text": seg.get("voiceover_text", "")
+                    }
+                    documentation_steps.append(step_data)
+                except Exception as e:
+                    print(f"❌ Error processing segment {seg['id']}: {e}")
+                    continue
                 
             # 2. Generate AI-powered Markdown
             ai_markdown = self.generate_ai_markdown_guide(video_id, documentation_steps)
