@@ -131,11 +131,20 @@ class NarrationPipeline:
             # Write narration timeline explicitly
             # NOTE: This preserves existing behavior that uses start_time/end_time.
             # The new narration_start/narration_end will be added later without removing anything.
+            # Write narration timeline explicitly
+            # NOTE: This preserves existing behavior that uses start_time/end_time.
+            # The new narration_start/narration_end will be added later without removing anything.
             if i < len(script):
                 script[i]["start_time"] = round(start_time, 3)
                 script[i]["duration"] = round(audio_duration, 3)
                 script[i]["end_time"] = round(end_time, 3)
                 script[i]["audio_duration"] = round(audio_duration, 3)
+                
+                # ✅ NEW: Calculate Word Spans for Karaoke Captions
+                # We do this here because we have the EXACT audio_duration from ffprobe
+                from src.infrastructure.voice_service import estimate_word_timestamps
+                word_spans = estimate_word_timestamps(script[i]["voiceover_text"], audio_duration)
+                script[i]["wordSpans"] = word_spans
 
             next_available = end_time + gap
 

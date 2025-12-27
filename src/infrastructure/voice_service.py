@@ -49,6 +49,10 @@ def generate_voiceover(script_data, credentials, output_dir="voiceovers"):
         with open(filename, "wb") as out:
             out.write(response.audio_content)
         
+        # Calculate estimating duration based on response byte size for MP3 (approximate)
+        # MP3 24khz/48kbps approx. 
+        # Better: let pipeline service fill this in accurately.
+        
         audio_files.append({
             "id": entry['id'],
             "filename": filename,
@@ -58,6 +62,7 @@ def generate_voiceover(script_data, credentials, output_dir="voiceovers"):
         })
 
         
+    
     
     # Save metadata
     metadata_path = os.path.join(output_dir, "metadata.json")
@@ -69,3 +74,37 @@ def generate_voiceover(script_data, credentials, output_dir="voiceovers"):
         }, f, indent=2)
     
     return audio_files
+
+def estimate_word_timestamps(text, total_duration_seconds):
+    """
+    Estimates the start and end time for each word based on character length.
+    This assumes a relatively constant speaking rate, which is true for AI.
+    """
+    words = text.split()
+    if not words:
+        return []
+
+    # Calculate total "weight" (characters) to distribute time proportionally
+    total_chars = sum(len(w) for w in words)
+    if total_chars == 0:
+        return []
+
+    # Calculate time per character
+    # We leave a tiny buffer at start/end so words don't feel too rushed
+    char_duration = total_duration_seconds / total_chars
+    
+    spans = []
+    current_time = 0.0
+
+    for word in words:
+        # Duration of this word is proportional to its length
+        word_dur = len(word) * char_duration
+        
+        spans.append({
+            "text": word,
+            "startTime": round(current_time, 3),
+            "endTime": round(current_time + word_dur, 3)
+        })
+        current_time += word_dur
+
+    return spans
