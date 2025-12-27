@@ -404,3 +404,14 @@ class VideoService:
             "-movflags", "+faststart",
             str(output_path)
         ])
+
+    def extract_frame(self, video_path, time_in_seconds, output_path):
+        self.run_cmd([
+            "ffmpeg", "-y",
+            "-ss", f"{time_in_seconds:.3f}",
+            "-i", str(video_path),
+            "-frames:v", "1",
+            "-q:v", "2",
+            "-pix_fmt", "yuvj420p",
+            str(output_path)
+        ])

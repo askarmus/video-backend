@@ -11,6 +11,7 @@ from src.application.use_cases.update_video_config import UpdateVideoConfigUseCa
 from src.application.use_cases.update_video_title import UpdateVideoTitleUseCase
 from src.infrastructure.repositories.supabase_video_repository import SupabaseVideoRepository
 from src.application.pipeline_service import NarrationPipeline
+from src.application.document_service import DocumentGenerationService
 from src.infrastructure.google_client import client, creds
 from src.api.v1.schemas.video import UploadCompleteRequest
 from src.config import PROJECT_ROOT
@@ -216,5 +217,37 @@ async def update_video_title(
         print(f"Update Title API Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.post("/{video_id}/generate-doc")
+async def generate_document(
+    video_id: str,
+    user=Depends(get_current_user)
+):
+    """
+    Generate step-by-step documentation (screenshots) from the video script.
+    """
+    try:
+        repo = SupabaseVideoRepository()
+        
+        # Verify ownership
+        video = repo.get_by_id(video_id)
+        if not video:
+            raise HTTPException(status_code=404, detail="Video not found")
+        if video.created_by != user.id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
+        service = DocumentGenerationService(repo)
+        doc_data = service.generate_guide(video_id)
+        
+        return {
+            "status": "success",
+            "message": "Documentation generated successfully",
+            "data": doc_data
+        }
+
+    except Exception as e:
+        print(f"Generate Document Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
